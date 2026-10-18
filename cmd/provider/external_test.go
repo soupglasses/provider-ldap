@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
@@ -23,9 +22,13 @@ type fixtureLDAP struct {
 	created      *ldap.AddRequest
 	beforeModify func()
 	compareErr   error
+	searchFn     func(*ldap.SearchRequest) (*ldap.SearchResult, error)
 }
 
-func (f *fixtureLDAP) Search(*ldap.SearchRequest) (*ldap.SearchResult, error) {
+func (f *fixtureLDAP) Search(request *ldap.SearchRequest) (*ldap.SearchResult, error) {
+	if f.searchFn != nil {
+		return f.searchFn(request)
+	}
 	if f.entry == nil {
 		return nil, ldap.NewError(ldap.LDAPResultNoSuchObject, fmt.Errorf("absent"))
 	}
@@ -48,32 +51,50 @@ func (f *fixtureLDAP) Modify(request *ldap.ModifyRequest) error {
 		f.beforeModify = nil
 	}
 	f.changes = append(f.changes, request)
+	next := ldap.NewEntry(f.entry.DN, map[string][]string{})
+	for _, a := range f.entry.Attributes {
+		next.Attributes = append(next.Attributes, &ldap.EntryAttribute{Name: a.Name, Values: append([]string{}, a.Values...)})
+	}
 	for _, change := range request.Changes {
 		var attr *ldap.EntryAttribute
-		for _, a := range f.entry.Attributes {
-			if strings.EqualFold(a.Name, change.Modification.Type) {
+		for _, a := range next.Attributes {
+			if canonicalAttributeName(a.Name) == canonicalAttributeName(change.Modification.Type) {
 				attr = a
 				break
 			}
 		}
 		if attr == nil {
 			attr = &ldap.EntryAttribute{Name: change.Modification.Type}
-			f.entry.Attributes = append(f.entry.Attributes, attr)
+			next.Attributes = append(next.Attributes, attr)
 		}
 		switch change.Operation {
 		case ldap.AddAttribute:
-			for _, v := range change.Modification.Vals {
-				if contains(attr.Values, v) {
+			for _, value := range change.Modification.Vals {
+				if contains(attr.Values, value) {
 					return ldap.NewError(ldap.LDAPResultAttributeOrValueExists, fmt.Errorf("racing writer"))
 				}
-				attr.Values = append(attr.Values, v)
+				attr.Values = append(attr.Values, value)
 			}
 		case ldap.ReplaceAttribute:
 			attr.Values = change.Modification.Vals
+		case ldap.DeleteAttribute:
+			for _, value := range change.Modification.Vals {
+				if !contains(attr.Values, value) {
+					return ldap.NewError(ldap.LDAPResultNoSuchAttribute, fmt.Errorf("racing removal"))
+				}
+				remaining := []string{}
+				for _, current := range attr.Values {
+					if current != value {
+						remaining = append(remaining, current)
+					}
+				}
+				attr.Values = remaining
+			}
 		default:
-			return fmt.Errorf("unexpected operation")
+			return fmt.Errorf("unexpected LDAP operation")
 		}
 	}
+	f.entry = next
 	return nil
 }
 func (f *fixtureLDAP) Del(*ldap.DelRequest) error { f.entry = nil; return nil }
@@ -102,7 +123,7 @@ func TestAtomicAddPreservesConcurrentMembership(t *testing.T) {
 	if !contains(attributeValues(conn.entry, "owner"), "uid=owner,dc=example") {
 		t.Fatal("undeclared owner overwritten")
 	}
-	if len(conn.changes) != 2 || conn.changes[1].Changes[0].Operation != ldap.AddAttribute {
+	if len(conn.changes) != 1 || conn.changes[0].Changes[0].Operation != ldap.AddAttribute {
 		t.Fatal("membership update was not atomic Add")
 	}
 }
@@ -165,7 +186,7 @@ func TestSecretAttributeResolutionStaysLocal(t *testing.T) {
 	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(secret).Build()
 	entry := testEntry("ProviderConfig", "fixture")
 	entry.Spec.ForProvider.AttributeSecretRefs = map[string]xpv2.LocalSecretKeySelector{"userPassword": {LocalSecretReference: xpv2.LocalSecretReference{Name: "credential"}, Key: "value"}}
-	desired, err := resolveAttributes(context.Background(), kube, entry)
+	desired, _, err := resolveAttributes(context.Background(), kube, entry)
 	if err != nil {
 		t.Fatal(err)
 	}

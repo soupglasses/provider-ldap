@@ -167,6 +167,35 @@ spec:
                 name: group
               status:
                 (conditions[?type == 'Ready'].status | [0]): "True"
+        - patch:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: group
+              spec:
+                forProvider:
+                  attributes:
+                    employeeNumber:
+                      - "123"
+                  additiveAttributes:
+                    objectClass:
+                      - groupOfNames
+                      - extensibleObject
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=shared,ou=groups,dc=example,dc=test
+              - 'LDAP_EXPECT_JSON={"employeeNumber": ["123"], "objectClass": ["groupOfNames", "extensibleObject"], "member": ["uid=sentinel,ou=users,dc=example,dc=test"]}'
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
         - command:
             entrypoint: kubectl
             args:
@@ -177,7 +206,7 @@ spec:
               - --
               - sh
               - -ec
-              - 'printf ''%s\n'' ''dn: cn=shared,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''replace: member'' ''member: uid=external-service,ou=users,dc=example,dc=test'' ''-'' ''add: objectClass'' ''objectClass: extensibleObject'' ''-'' ''replace: description'' ''description: drifted'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
+              - 'printf ''%s\n'' ''dn: cn=shared,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''replace: member'' ''member: uid=external-service,ou=users,dc=example,dc=test'' ''-'' ''replace: description'' ''description: drifted'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
         - command:
             entrypoint: kubectl
             args:
@@ -213,6 +242,177 @@ spec:
               - --
               - env
               - LDAP_EXPECT_DN=cn=shared,ou=groups,dc=example,dc=test
+              - LDAP_EXPECT_ABSENT=true
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+    - name: schema-alias-and-matching-rule-ownership
+      try:
+        - apply:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-rdn
+              spec:
+                managementPolicies:
+                  - Observe
+                  - Create
+                  - Update
+                  - Delete
+                providerConfigRef:
+                  kind: ProviderConfig
+                  name: directory
+                forProvider:
+                  dn: cn=Aliases,ou=groups,dc=example,dc=test
+                  attributes:
+                    2.5.4.3:
+                      - Aliases
+                  additiveAttributes:
+                    objectClass:
+                      - groupOfNames
+                    member:
+                      - uid=sentinel,ou=users,dc=example,dc=test
+        - assert:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-rdn
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=Aliases,ou=groups,dc=example,dc=test
+              - 'LDAP_EXPECT_JSON={"cn": ["Aliases"]}'
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+        - apply:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-overlap
+              spec:
+                managementPolicies:
+                  - Observe
+                  - Create
+                  - Update
+                providerConfigRef:
+                  kind: ProviderConfig
+                  name: directory
+                forProvider:
+                  dn: cn=Denied,ou=groups,dc=example,dc=test
+                  attributes:
+                    cn:
+                      - Denied
+                  additiveAttributes:
+                    2.5.4.3:
+                      - Denied
+                    objectClass:
+                      - groupOfNames
+                    member:
+                      - uid=sentinel,ou=users,dc=example,dc=test
+        - assert:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-overlap
+              status:
+                (conditions[?type == 'Synced'].status | [0]): "False"
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=Denied,ou=groups,dc=example,dc=test
+              - LDAP_EXPECT_ABSENT=true
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+        - delete:
+            ref:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              name: alias-overlap
+        - patch:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-rdn
+              spec:
+                forProvider:
+                  absentAttributes:
+                    member:
+                      - UID=sentinel,OU=users,DC=example,DC=test
+        - assert:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-rdn
+              status:
+                (conditions[?type == 'Synced'].status | [0]): "False"
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=Aliases,ou=groups,dc=example,dc=test
+              - 'LDAP_EXPECT_JSON={"member": ["uid=sentinel,ou=users,dc=example,dc=test"]}'
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+        - patch:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-rdn
+              spec:
+                forProvider:
+                  absentAttributes: null
+        - assert:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: alias-rdn
+              status:
+                (conditions[?type == 'Synced'].status | [0]): "True"
+        - delete:
+            ref:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              name: alias-rdn
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=Aliases,ou=groups,dc=example,dc=test
               - LDAP_EXPECT_ABSENT=true
               - /tests/check
               - -test.run=^TestLDAPState$
@@ -305,6 +505,59 @@ spec:
               - --timeout=90s
         - apply:
             resource:
+              apiVersion: ldap.finnes.dev/v1beta1
+              kind: ProviderConfig
+              metadata:
+                name: generated-directory
+              spec:
+                credentials:
+                  source: Secret
+                  secretRef:
+                    name: generated-directory
+                    namespace: ldap-test
+                    key: credentials.yaml
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: generated
+              stringData:
+                password: unrelated-existing-secret
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: collision-owner
+        - command:
+            entrypoint: kubectl
+            args:
+              - get
+              - configmap/collision-owner
+              - -n
+              - ldap-test
+              - -o
+              - json
+            outputs:
+              - name: collisionOwnerUID
+                value: (json_parse($stdout).metadata.uid)
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: generated-foreign
+                ownerReferences:
+                  - apiVersion: v1
+                    kind: ConfigMap
+                    name: collision-owner
+                    uid: ($collisionOwnerUID)
+                    controller: true
+              stringData:
+                password: foreign-owned-secret
+        - apply:
+            resource:
               apiVersion: examples.ldap.finnes.dev/v1alpha1
               kind: ServiceAccount
               metadata:
@@ -312,11 +565,45 @@ spec:
               spec:
                 cn: generated
                 baseDN: ou=users,dc=example,dc=test
-                secretName: generated-credentials
                 backendRef:
                   kind: ProviderConfig
-                  name: directory
+                  name: generated-directory
                 deletionPolicy: Delete
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: generated
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "False"
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=uid=generated,ou=users,dc=example,dc=test
+              - LDAP_EXPECT_ABSENT=true
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: generated-directory
+              stringData:
+                credentials.yaml: |
+                  host: ldap.ldap-test.svc
+                  port: 1389
+                  bindDN: cn=admin,dc=example,dc=test
+                  password: disposable-fixture-password
+                  tls: false
         - assert:
             resource:
               apiVersion: examples.ldap.finnes.dev/v1alpha1
@@ -328,12 +615,41 @@ spec:
         - script:
             content: |
               set -eu
-              encoded=$(kubectl get secret generated-credentials -n ldap-test -o jsonpath='{.data.password}')
-              password=$(printf '%s' "$encoded" | base64 -d)
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              password=$(printf %s "$encoded" | base64 -d)
               [ "${#password}" -eq 32 ]
               kubectl exec -n ldap-test deployment/ldap -- env LDAP_BIND_PASSWORD="$password" /tests/check -test.run=^TestLDAPBind$ -test.v
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: generated
+              data:
+                password: dW5yZWxhdGVkLWV4aXN0aW5nLXNlY3JldA==
         - script:
-            content: kubectl get secret generated-credentials -n ldap-test -o jsonpath='{.data.password}' | sha256sum > /tmp/provider-ldap-generated-password.sha256
+            content: |
+              set -eu
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              printf %s "$encoded" | sha256sum > /tmp/provider-ldap-generated-password.sha256
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: generated-foreign
+              data:
+                password: Zm9yZWlnbi1vd25lZC1zZWNyZXQ=
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: generated
+              status:
+                (secretRef.name != 'generated' && secretRef.name != 'generated-foreign'): true
     - name: restart-controller
       try:
         - command:
@@ -378,17 +694,73 @@ spec:
               - /tests/check
               - -test.run=^TestLDAPState$
               - -test.v
+        - command:
+            entrypoint: kubectl
+            args:
+              - rollout
+              - restart
+              - deployment/crossplane
+              - -n
+              - crossplane-system
+        - command:
+            entrypoint: kubectl
+            args:
+              - rollout
+              - status
+              - deployment/crossplane
+              - -n
+              - crossplane-system
+              - --timeout=180s
+        - command:
+            entrypoint: kubectl
+            args:
+              - rollout
+              - restart
+              - deployment
+              - -n
+              - crossplane-system
+              - -l
+              - pkg.crossplane.io/function=function-go-templating
+        - command:
+            entrypoint: kubectl
+            args:
+              - rollout
+              - status
+              - deployment
+              - -n
+              - crossplane-system
+              - -l
+              - pkg.crossplane.io/function=function-go-templating
+              - --timeout=180s
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: generated
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
         - script:
             content: |
               set -eu
-              encoded=$(kubectl get secret generated-credentials -n ldap-test -o jsonpath='{.data.password}')
-              password=$(printf '%s' "$encoded" | base64 -d)
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              password=$(printf %s "$encoded" | base64 -d)
               [ "${#password}" -eq 32 ]
               kubectl exec -n ldap-test deployment/ldap -- env LDAP_BIND_PASSWORD="$password" /tests/check -test.run=^TestLDAPBind$ -test.v
         - script:
-            content: kubectl get secret generated-credentials -n ldap-test -o jsonpath='{.data.password}' | sha256sum | cmp /tmp/provider-ldap-generated-password.sha256 -
+            content: |
+              set -eu
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              printf %s "$encoded" | sha256sum | cmp /tmp/provider-ldap-generated-password.sha256 -
     - name: rotate-generated-password
       try:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Secret
+              name: generated-directory
         - patch:
             resource:
               apiVersion: examples.ldap.finnes.dev/v1alpha1
@@ -399,21 +771,96 @@ spec:
                 rotationID: second
         - assert:
             resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: generated
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "False"
+        - apply:
+            resource:
               apiVersion: v1
               kind: Secret
               metadata:
-                name: generated-credentials
-                annotations:
-                  examples.ldap.finnes.dev/rotation-id: second
+                name: generated-directory
+              stringData:
+                credentials.yaml: |
+                  host: ldap.ldap-test.svc
+                  port: 1389
+                  bindDN: cn=admin,dc=example,dc=test
+                  password: disposable-fixture-password
+                  tls: false
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: generated
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
         - script:
             content: |
               set -eu
-              encoded=$(kubectl get secret generated-credentials -n ldap-test -o jsonpath='{.data.password}')
-              password=$(printf '%s' "$encoded" | base64 -d)
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              password=$(printf %s "$encoded" | base64 -d)
               [ "${#password}" -eq 32 ]
               kubectl exec -n ldap-test deployment/ldap -- env LDAP_BIND_PASSWORD="$password" /tests/check -test.run=^TestLDAPBind$ -test.v
         - script:
-            content: if kubectl get secret generated-credentials -n ldap-test -o jsonpath='{.data.password}' | sha256sum | cmp -s /tmp/provider-ldap-generated-password.sha256 -; then echo 'password did not rotate' >&2; exit 1; fi
+            content: |
+              set -eu
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              if printf %s "$encoded" | sha256sum | cmp -s /tmp/provider-ldap-generated-password.sha256 -; then echo "password did not rotate" >&2; exit 1; fi
+    - name: regenerate-lost-credentials
+      try:
+        - script:
+            content: |
+              set -eu
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              kubectl get secret "$secret" -n ldap-test -o jsonpath='{.metadata.uid}'
+            outputs:
+              - name: previousSecretUID
+                value: ($stdout)
+        - script:
+            content: |
+              set -eu
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}' | sha256sum > /tmp/provider-ldap-lost-password.sha256
+              kubectl delete secret "$secret" -n ldap-test --wait=true
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                labels:
+                  crossplane.io/composite: generated
+              (metadata.uid != $previousSecretUID): true
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: generated
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
+        - script:
+            content: |
+              set -eu
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              encoded=$(kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}')
+              password=$(printf %s "$encoded" | base64 -d)
+              [ "${#password}" -eq 32 ]
+              kubectl exec -n ldap-test deployment/ldap -- env LDAP_BIND_PASSWORD="$password" /tests/check -test.run=^TestLDAPBind$ -test.v
+        - script:
+            content: |
+              set -eu
+              trap 'rm -f /tmp/provider-ldap-lost-password.sha256' EXIT
+              secret=$(kubectl get serviceaccount.examples.ldap.finnes.dev generated -n ldap-test -o jsonpath='{.status.secretRef.name}')
+              if kubectl get secret "$secret" -n ldap-test -o jsonpath='{.data.password}' | sha256sum | cmp -s /tmp/provider-ldap-lost-password.sha256 -; then
+                echo 'lost credentials were not regenerated' >&2
+                exit 1
+              fi
         - delete:
             ref:
               apiVersion: examples.ldap.finnes.dev/v1alpha1
@@ -423,12 +870,244 @@ spec:
             entrypoint: kubectl
             args:
               - exec
-              - --namespace
+              - -n
               - ldap-test
               - deployment/ldap
               - --
               - env
               - LDAP_EXPECT_DN=uid=generated,ou=users,dc=example,dc=test
+              - LDAP_EXPECT_ABSENT=true
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+    - name: orphan-service-account
+      try:
+        - apply:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: orphaned
+              spec:
+                cn: orphaned
+                baseDN: ou=users,dc=example,dc=test
+                backendRef:
+                  kind: ProviderConfig
+                  name: directory
+                deletionPolicy: Orphan
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              metadata:
+                name: orphaned
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
+        - script:
+            content: kubectl get serviceaccount.examples.ldap.finnes.dev orphaned -n ldap-test -o json
+            outputs:
+              - name: orphanedSecret
+                value: (json_parse($stdout).status.secretRef.name)
+        - delete:
+            ref:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: ServiceAccount
+              name: orphaned
+        - error:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: ($orphanedSecret)
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=uid=orphaned,ou=users,dc=example,dc=test
+              - 'LDAP_EXPECT_JSON={"cn": ["orphaned"]}'
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+    - name: group-composition-sentinel-migration
+      try:
+        - apply:
+            file: ../../examples/compositions/groupofnames/definition.yaml
+        - command:
+            entrypoint: kubectl
+            args:
+              - wait
+              - xrd/groupofnames.examples.ldap.finnes.dev
+              - --for=condition=Established
+              - --timeout=90s
+        - apply:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              spec:
+                cn: composed
+                baseDN: ou=groups,dc=example,dc=test
+                sentinelDN: uid=sentinel-a,ou=users,dc=example,dc=test
+                backendRef:
+                  kind: ProviderConfig
+                  name: directory
+                deletionPolicy: Delete
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - sh
+              - -ec
+              - 'printf ''%s\n'' ''dn: cn=composed,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''add: member'' ''member: uid=external-service,ou=users,dc=example,dc=test'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
+        - command:
+            entrypoint: kubectl
+            args:
+              - scale
+              - deployment
+              - -n
+              - crossplane-system
+              - -l
+              - app.kubernetes.io/name=ldap-provider
+              - --replicas=0
+        - command:
+            entrypoint: kubectl
+            args:
+              - wait
+              - pod
+              - -n
+              - crossplane-system
+              - -l
+              - app.kubernetes.io/name=ldap-provider
+              - --for=delete
+              - --timeout=90s
+        - patch:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              spec:
+                sentinelDN: uid=sentinel-b,ou=users,dc=example,dc=test
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              status:
+                (contains(managedSentinelDNs, `"uid=sentinel-a,ou=users,dc=example,dc=test"`)): true
+                (contains(managedSentinelDNs, `"uid=sentinel-b,ou=users,dc=example,dc=test"`)): true
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - sh
+              - -ec
+              - 'printf ''%s\n'' ''dn: cn=composed,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''add: member'' ''member: uid=sentinel-b,ou=users,dc=example,dc=test'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
+        - patch:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              spec:
+                sentinelDN: uid=sentinel-c,ou=users,dc=example,dc=test
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              status:
+                (contains(managedSentinelDNs, `"uid=sentinel-a,ou=users,dc=example,dc=test"`)): true
+                (contains(managedSentinelDNs, `"uid=sentinel-b,ou=users,dc=example,dc=test"`)): true
+                (contains(managedSentinelDNs, `"uid=sentinel-c,ou=users,dc=example,dc=test"`)): true
+        - command:
+            entrypoint: kubectl
+            args:
+              - rollout
+              - restart
+              - deployment/crossplane
+              - -n
+              - crossplane-system
+        - command:
+            entrypoint: kubectl
+            args:
+              - rollout
+              - status
+              - deployment/crossplane
+              - -n
+              - crossplane-system
+              - --timeout=180s
+        - command:
+            entrypoint: kubectl
+            args:
+              - scale
+              - deployment
+              - -n
+              - crossplane-system
+              - -l
+              - app.kubernetes.io/name=ldap-provider
+              - --replicas=1
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              status:
+                (conditions[?type == 'Ready'].status | [0]): "True"
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=composed,ou=groups,dc=example,dc=test
+              - 'LDAP_EXPECT_JSON={"member": ["uid=sentinel-c,ou=users,dc=example,dc=test", "uid=external-service,ou=users,dc=example,dc=test"]}'
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+        - delete:
+            ref:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              name: composed
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=composed,ou=groups,dc=example,dc=test
               - LDAP_EXPECT_ABSENT=true
               - /tests/check
               - -test.run=^TestLDAPState$

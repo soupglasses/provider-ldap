@@ -54,21 +54,32 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 		return nil, err
 	}
 	var desired map[string][]string
+	var versions map[string]string
 	if entry.GetDeletionTimestamp().IsZero() {
-		desired, err = resolveAttributes(ctx, c.kube, entry)
+		desired, versions, err = resolveAttributes(ctx, c.kube, entry)
 		if err != nil {
 			return nil, err
 		}
 	}
-	conn, err := dialLDAP(cfg)
+	conn, err := dialLDAP(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	var additive map[string][]string
+	var absent map[string][]string
 	if entry.GetDeletionTimestamp().IsZero() {
 		additive = entry.Spec.ForProvider.AdditiveAttributes
+		absent = entry.Spec.ForProvider.AbsentAttributes
 	}
-	return &ldapExternal{conn: conn, desired: desired, additive: additive}, nil
+	external := &ldapExternal{conn: conn, desired: desired, additive: additive, absent: absent, secretVersions: versions}
+	external.cancelOnContext(ctx)
+	if entry.GetDeletionTimestamp().IsZero() {
+		if err := external.loadSchema(ctx, entry.Spec.ForProvider.DN); err != nil {
+			external.Disconnect(ctx)
+			return nil, err
+		}
+	}
+	return external, nil
 }
 
 // The API's immutable DN is authoritative; external-name is only Crossplane's lifecycle identifier.

@@ -53,6 +53,16 @@ spec:
                 forProvider:
                   description: EntryParameters declares attribute ownership. LDAP attribute names are case insensitive.
                   properties:
+                    absentAttributes:
+                      additionalProperties:
+                        items:
+                          type: string
+                        type: array
+                      description: |-
+                        AbsentAttributes removes only these values, preserving all other values.
+                        Values must be distinct from additive values under the directory's equality rules.
+                      maxProperties: 128
+                      type: object
                     additiveAttributes:
                       additionalProperties:
                         items:
@@ -164,6 +174,15 @@ spec:
                   properties:
                     dn:
                       type: string
+                    observedGeneration:
+                      description: ObservedGeneration is acknowledged only after observing full external convergence.
+                      format: int64
+                      type: integer
+                    observedSecretVersions:
+                      additionalProperties:
+                        type: string
+                      description: ObservedSecretVersions acknowledges verified Secret input versions; it contains no values.
+                      type: object
                     uuid:
                       type: string
                   type: object

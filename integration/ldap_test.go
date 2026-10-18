@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,5 +103,24 @@ func TestLDAPBind(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("generated credentials did not authenticate: %v: %v", err, last)
+	}
+	conn, err := ldap.DialURL("ldap://127.0.0.1:1389")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.Bind("cn=admin,dc=example,dc=test", "disposable-fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := conn.Search(ldap.NewSearchRequest("uid=generated,ou=users,dc=example,dc=test", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 5, false, "(objectClass=*)", []string{"userPassword"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatal("generated LDAP entry not found")
+	}
+	stored := result.Entries[0].GetAttributeValue("userPassword")
+	if stored == password || !strings.HasPrefix(stored, "{CRYPT}$2") {
+		t.Fatal("generated LDAP password is not stored as the configured bcrypt hash")
 	}
 }

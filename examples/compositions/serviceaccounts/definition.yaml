@@ -26,7 +26,6 @@ spec:
                 - cn
                 - baseDN
                 - backendRef
-                - secretName
               properties:
                 cn:
                   type: string
@@ -68,12 +67,14 @@ spec:
                 rotationID:
                   type: string
                   default: ""
-                secretName:
-                  type: string
-                  minLength: 1
-                  x-kubernetes-validations:
-                    - rule: self == oldSelf
-                      message: secretName is immutable
+            status:
+              type: object
+              properties:
+                secretRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
 ---
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
@@ -97,21 +98,46 @@ spec:
             {{- $xr := .observed.composite.resource -}}
             {{- $spec := $xr.spec -}}
             {{- $entry := getComposedResource . "entry" -}}
-            {{- $policies := list "Observe" "Create" "Update" -}}
-            {{- if eq ($spec.deletionPolicy | default "Delete") "Delete" }}{{ $policies = append $policies "Delete" }}{{ end -}}
             {{- $secret := getComposedResource . "password" -}}
             {{- $rotation := $spec.rotationID | default "" -}}
             {{- $password := "" -}}
-            {{- if and $secret (dig "data" "password" "" $secret) (eq (dig "metadata" "annotations" "examples.ldap.finnes.dev/rotation-id" "" $secret) $rotation) -}}
+            {{- $rotationMatches := and $secret (eq (dig "metadata" "annotations" "examples.ldap.finnes.dev/rotation-id" "" $secret) $rotation) -}}
+            {{- if and $rotationMatches (dig "data" "password" "" $secret) -}}
               {{- $password = $secret.data.password -}}
             {{- else -}}
               {{- $password = randAlphaNum 32 | b64enc -}}
             {{- end -}}
+            {{- $ldapPassword := "" -}}
+            {{- if and $rotationMatches (dig "data" "password" "" $secret) (dig "data" "ldap-password" "" $secret) -}}
+              {{- $ldapPassword = index $secret.data "ldap-password" -}}
+            {{- else -}}
+              {{- $ldapPassword = printf "{CRYPT}%s" (bcrypt ($password | b64dec)) | b64enc -}}
+            {{- end -}}
+            {{- $attributes := dict "cn" (list $spec.cn) "sn" (list "Service") -}}
+            {{- if hasKey $spec "description" -}}
+              {{- $_ := set $attributes "description" (ternary (list $spec.description) (list) (ne $spec.description "")) -}}
+            {{- end -}}
+            {{- $secretName := dig "metadata" "name" "" ($secret | default dict) -}}
+            {{- $parameters := dict "dn" (printf "uid=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "additiveAttributes" (dict "objectClass" (list "inetOrgPerson")) "attributeSecretRefs" (dict "userPassword" (dict "name" $secretName "key" "ldap-password")) -}}
+            {{- $entryReady := and $entry (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True") -}}
+            {{- $generationMatches := and $entry (eq (toString (dig "status" "atProvider" "observedGeneration" 0 $entry)) (toString $entry.metadata.generation)) -}}
+            {{- $versionMatches := and $entry $secret (eq (dig "status" "atProvider" "observedSecretVersions" "userpassword" "" $entry) $secret.metadata.resourceVersion) -}}
+            {{- $ready := not (empty (and $rotationMatches (dig "data" "ldap-password" "" ($secret | default dict)) $entryReady $generationMatches $versionMatches (deepEqual $entry.spec.forProvider $parameters))) -}}
+            ---
+            apiVersion: {{ $xr.apiVersion }}
+            kind: {{ $xr.kind }}
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/ready: {{ $ready | ternary "True" "False" | quote }}
+            status:
+              {{- if $secret }}
+              secretRef:
+                name: {{ $secret.metadata.name }}
+              {{- end }}
             ---
             apiVersion: v1
             kind: Secret
             metadata:
-              name: {{ $spec.secretName }}
               namespace: {{ $xr.metadata.namespace }}
               annotations:
                 {{ setResourceNameAnnotation "password" }}
@@ -120,31 +146,22 @@ spec:
             type: Opaque
             data:
               password: {{ $password | quote }}
+              ldap-password: {{ $ldapPassword | quote }}
             {{- if or $entry (and $secret (dig "data" "password" "" $secret)) }}
             ---
             apiVersion: ldap.finnes.dev/v1alpha1
             kind: Entry
             metadata:
-              name: {{ printf "service-%s" $xr.metadata.uid }}
               namespace: {{ $xr.metadata.namespace }}
               annotations:
                 {{ setResourceNameAnnotation "entry" }}
-                gotemplating.fn.crossplane.io/ready: {{ and (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True") | ternary "True" "False" | quote }}
+                gotemplating.fn.crossplane.io/ready: {{ $ready | ternary "True" "False" | quote }}
             spec:
-              managementPolicies: {{ $policies | toJson }}
+              {{- if not $secret }}
+              {{- $entry.spec | toYaml | nindent 2 }}
+              {{- else }}
+              managementPolicies: {{ if eq ($spec.deletionPolicy | default "Delete") "Delete" }}[Observe, Create, Update, Delete]{{ else }}[Observe, Create, Update]{{ end }}
               providerConfigRef: {{ $spec.backendRef | toJson }}
-              forProvider:
-                dn: {{ printf "uid=%s,%s" $spec.cn $spec.baseDN | quote }}
-                attributes:
-                  cn: [{{ $spec.cn | quote }}]
-                  sn: [Service]
-                  {{- if hasKey $spec "description" }}
-                  description: {{ if $spec.description }}[{{ $spec.description | quote }}]{{ else }}[]{{ end }}
-                  {{- end }}
-                additiveAttributes:
-                  objectClass: [inetOrgPerson]
-                attributeSecretRefs:
-                  userPassword:
-                    name: {{ $spec.secretName }}
-                    key: password
+              forProvider: {{ $parameters | toJson }}
+              {{- end }}
             {{- end }}

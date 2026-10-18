@@ -32,11 +32,20 @@ type EntryParameters struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
 	AdditiveAttributes map[string][]string `json:"additiveAttributes,omitempty"`
+	// AbsentAttributes removes only these values, preserving all other values.
+	// Values must be distinct from additive values under the directory's equality rules.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=128
+	AbsentAttributes map[string][]string `json:"absentAttributes,omitempty"`
 }
 
 type EntryObservation struct {
-	DN   string `json:"dn,omitempty"`
-	UUID string `json:"uuid,omitempty"`
+	// ObservedGeneration is acknowledged only after observing full external convergence.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ObservedSecretVersions acknowledges verified Secret input versions; it contains no values.
+	ObservedSecretVersions map[string]string `json:"observedSecretVersions,omitempty"`
+	DN                     string            `json:"dn,omitempty"`
+	UUID                   string            `json:"uuid,omitempty"`
 }
 type EntrySpec struct {
 	xpv2.ManagedResourceSpec `json:",inline"`

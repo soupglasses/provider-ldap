@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
 # SPDX-License-Identifier: Apache-2.0
-FROM golang:1.27.2-alpine3.23@sha256:9e45f0eb4a63ed37ad6e604950407558b7c738e34e015ae77a5d4ad369cde079 AS generate
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23@sha256:9e45f0eb4a63ed37ad6e604950407558b7c738e34e015ae77a5d4ad369cde079 AS generate
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN apk add --no-cache bash
+RUN apk add --no-cache bash ca-certificates
 RUN go mod download
 RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1 && go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
 COPY apis ./apis
@@ -11,9 +11,14 @@ COPY hack ./hack
 COPY generate.sh ./
 RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build ./generate.sh
 
-FROM generate AS build
+FROM generate AS unit-tests
 COPY cmd ./cmd
-RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build test -z "$(gofmt -l cmd apis)" && mkdir -p /out && CGO_ENABLED=0 go test -trimpath -coverprofile=/out/coverage.out -buildvcs=false -p=2 ./cmd/... ./apis/... && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -buildvcs=false -p=2 -o /out/provider ./cmd/provider
+RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build test -z "$(gofmt -l cmd apis)" && mkdir -p /out && CGO_ENABLED=0 go test -trimpath -coverprofile=/out/coverage.out -buildvcs=false -p=2 ./cmd/... ./apis/...
+
+FROM unit-tests AS build
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -buildvcs=false -p=2 -o /out/provider ./cmd/provider
 
 FROM generate AS tests-build
 COPY integration ./integration
@@ -24,11 +29,11 @@ COPY --from=generate /src/generated/crds /generated/crds
 COPY --from=generate /src/apis /apis
 
 FROM scratch AS coverage
-COPY --from=build /out/coverage.out /coverage.out
+COPY --from=unit-tests /out/coverage.out /coverage.out
 
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 AS runtime
 LABEL org.opencontainers.image.source="https://github.com/soupglasses/provider-ldap"
-RUN apk add --no-cache ca-certificates
+COPY --from=generate /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/provider /provider
 COPY LICENSE /licenses/provider-ldap-Apache-2.0
 COPY LICENSES/ /licenses/

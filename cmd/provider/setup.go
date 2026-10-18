@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -164,20 +163,64 @@ func connectionSettings(ctx context.Context, k client.Client, entry *entryapi.En
 	}
 	return cfg, nil
 }
-func dialLDAP(spec ConnectionDocument) (*ldap.Conn, error) {
-	scheme := "ldaps"
-	if !*spec.TLS {
-		scheme = "ldap"
+func dialLDAP(ctx context.Context, spec ConnectionDocument) (*ldap.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	address := (&url.URL{Scheme: scheme, Host: net.JoinHostPort(spec.Host, strconv.Itoa(spec.Port))}).String()
-	conn, err := ldap.DialURL(address, ldap.DialWithDialer(&net.Dialer{Timeout: ldapTimeout}), ldap.DialWithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: spec.TLSServerName}))
+	address := net.JoinHostPort(spec.Host, strconv.Itoa(spec.Port))
+	raw, err := (&net.Dialer{Timeout: ldapTimeout}).DialContext(ctx, "tcp", address)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, directoryError("connect", err)
 	}
+	// Interrupt TLS and Bind immediately on cancellation. The external client installs
+	// its own lifetime callback before any subsequent LDAP operation.
+	socket := raw
+	stop := context.AfterFunc(ctx, func() { _ = socket.Close() })
+	defer stop()
+	initialDeadline := time.Now().Add(ldapTimeout)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(initialDeadline) {
+		initialDeadline = deadline
+	}
+	if err := raw.SetDeadline(initialDeadline); err != nil {
+		raw.Close()
+		return nil, directoryError("set connection deadline", err)
+	}
+	if *spec.TLS {
+		serverName := spec.TLSServerName
+		if serverName == "" {
+			serverName = spec.Host
+		}
+		secured := tls.Client(raw, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName})
+		if err := secured.HandshakeContext(ctx); err != nil {
+			raw.Close()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, directoryError("TLS handshake", err)
+		}
+		raw = secured
+	}
+	conn := ldap.NewConn(raw, *spec.TLS)
 	conn.SetTimeout(ldapTimeout)
+	conn.Start()
 	if err := conn.Bind(spec.BindDN, spec.Password); err != nil {
 		conn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, directoryError("bind", err)
+	}
+	deadline, _ := ctx.Deadline()
+	if err := raw.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return nil, directoryError("set connection deadline", err)
+	}
+	if err := ctx.Err(); err != nil {
+		conn.Close()
+		return nil, err
 	}
 	return conn, nil
 }

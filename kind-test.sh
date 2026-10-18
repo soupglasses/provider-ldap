@@ -82,4 +82,5 @@ kubectl wait provider/ldap --for=condition=Healthy --timeout=180s
 kubectl wait crd/entries.ldap.finnes.dev --for=condition=Established --timeout=90s
 report_path=${CHAINSAW_REPORT_PATH:-$work_dir/reports}
 mkdir -p "$report_path"
-chainsaw test "$repo_dir/tests/e2e" --report-format JUNIT-TEST --report-path "$report_path"
+# The cluster trap owns cleanup; deleting credentials before failed Entries can strand finalizers.
+chainsaw test "$repo_dir/tests/e2e" --skip-delete --report-format JUNIT-TEST --report-path "$report_path"
