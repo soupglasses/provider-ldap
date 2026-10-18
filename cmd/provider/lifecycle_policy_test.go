@@ -17,15 +17,14 @@ import (
 
 func TestSchemaCanonicalRDNPolicies(t *testing.T) {
 	for _, tc := range []struct {
-		name                      string
-		desired, additive, absent map[string][]string
-		versions                  map[string]string
-		reason                    string
+		name            string
+		desired, shared map[string][]string
+		versions        map[string]string
+		reason          string
 	}{
 		{name: "owned alias drops RDN", desired: map[string][]string{"commonName": {"other"}}, reason: "DN naming value"},
 		{name: "secret alias of RDN", desired: map[string][]string{"2.5.4.3": {"Group"}}, versions: map[string]string{"2.5.4.3": "17"}, reason: "Secret references"},
-		{name: "absent alias of RDN", absent: map[string][]string{"2.5.4.3": {"Group"}}, reason: "declared absent"},
-		{name: "exact and additive aliases", desired: map[string][]string{"cn": {"Group"}}, additive: map[string][]string{"2.5.4.3": {"Other"}}, reason: "aliases an additive"},
+		{name: "exact and shared aliases", desired: map[string][]string{"cn": {"Group"}}, shared: map[string][]string{"2.5.4.3": {"Other"}}, reason: "aliases a shared"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := &fixtureLDAP{searchFn: func(request *ldap.SearchRequest) (*ldap.SearchResult, error) {
@@ -35,7 +34,7 @@ func TestSchemaCanonicalRDNPolicies(t *testing.T) {
 				}
 				return &ldap.SearchResult{Entries: []*ldap.Entry{ldap.NewEntry(request.BaseDN, attributes)}}, nil
 			}}
-			external := &ldapExternal{conn: conn, desired: tc.desired, additive: tc.additive, absent: tc.absent, secretVersions: tc.versions}
+			external := &ldapExternal{conn: conn, desired: tc.desired, shared: tc.shared, secretVersions: tc.versions}
 			if err := external.loadSchema(context.Background(), "cn=Group,dc=example"); err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("invalid RDN ownership accepted: %v", err)
 			}
@@ -79,54 +78,6 @@ func matchedValueFixture(t *testing.T, conn *fixtureLDAP) {
 			}
 		}
 		return &ldap.SearchResult{Entries: []*ldap.Entry{result}}, nil
-	}
-}
-func TestAtomicSentinelReplacementPreservesHumanValues(t *testing.T) {
-	dn := "cn=group,dc=example"
-	conn := &fixtureLDAP{entry: ldap.NewEntry(dn, map[string][]string{"member": {"old-sentinel", "human"}, "description": {"old"}})}
-	matchedValueFixture(t, conn)
-	conn.beforeModify = func() {
-		for _, attr := range conn.entry.Attributes {
-			if attr.Name == "member" {
-				attr.Values = append(attr.Values, "concurrent-human")
-			}
-		}
-	}
-	external := &ldapExternal{conn: conn, desired: map[string][]string{"description": {"new"}}, additive: map[string][]string{"member": {"new-sentinel"}}, absent: map[string][]string{"member": {"old-sentinel"}}}
-	entry := testEntry("ProviderConfig", "fixture")
-	entry.Spec.ForProvider.DN = dn
-	if _, err := external.Update(context.Background(), entry); err != nil {
-		t.Fatal(err)
-	}
-	values := attributeValues(conn.entry, "member")
-	if contains(values, "old-sentinel") || !contains(values, "new-sentinel") || !contains(values, "human") || !contains(values, "concurrent-human") {
-		t.Fatalf("atomic replacement lost unmanaged values: %v", values)
-	}
-	if len(conn.changes) != 1 || len(conn.changes[0].Changes) != 3 {
-		t.Fatal("present/exact/absent policies were not one atomic Modify")
-	}
-}
-func TestUnstoredEquivalentPoliciesNeverDeleteAfterDetection(t *testing.T) {
-	dn := "uid=service,dc=example"
-	conn := &fixtureLDAP{entry: ldap.NewEntry(dn, map[string][]string{"cn": {"Bob"}})}
-	matchedValueFixture(t, conn)
-	external := &ldapExternal{conn: conn, additive: map[string][]string{"cn": {"Alice"}}, absent: map[string][]string{"cn": {"alice"}}}
-	entry := testEntry("ProviderConfig", "fixture")
-	entry.Spec.ForProvider.DN = dn
-	// A directory can compare these literals only after a matching value exists.
-	if _, err := external.Update(context.Background(), entry); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if _, err := external.Observe(context.Background(), entry); err == nil || !strings.Contains(err.Error(), "directory-equivalent") {
-			t.Fatalf("equivalent policies not rejected after observation: %v", err)
-		}
-		if _, err := external.Update(context.Background(), entry); err == nil {
-			t.Fatal("conflicting absence policy was applied")
-		}
-	}
-	if len(conn.changes) != 1 || !contains(attributeValues(conn.entry, "cn"), "Alice") || !contains(attributeValues(conn.entry, "cn"), "Bob") {
-		t.Fatal("invalid policy deleted or oscillated values after detection")
 	}
 }
 func TestCancellationClosesBoundLDAPConnection(t *testing.T) {

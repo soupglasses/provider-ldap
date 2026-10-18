@@ -53,36 +53,6 @@ spec:
                 forProvider:
                   description: EntryParameters declares attribute ownership. LDAP attribute names are case insensitive.
                   properties:
-                    absentAttributes:
-                      additionalProperties:
-                        items:
-                          type: string
-                        type: array
-                      description: |-
-                        AbsentAttributes removes only these values, preserving all other values.
-                        Values must be distinct from additive values under the directory's equality rules.
-                      maxProperties: 128
-                      type: object
-                    additiveAttributes:
-                      additionalProperties:
-                        items:
-                          type: string
-                        type: array
-                      description: AdditiveAttributes ensures values are present with atomic LDAP Add operations, preserving all other values.
-                      maxProperties: 128
-                      type: object
-                    attributeOwnership:
-                      additionalProperties:
-                        description: AttributeOwnershipPolicy controls whether an attribute owns its complete set or only declared values.
-                        enum:
-                          - Exact
-                          - Subset
-                        type: string
-                      description: |-
-                        AttributeOwnership selects Exact (default) or Subset for keys in Attributes.
-                        Secret references always use Exact ownership.
-                      maxProperties: 128
-                      type: object
                     attributeSecretRefs:
                       additionalProperties:
                         description: |-
@@ -108,9 +78,7 @@ spec:
                         items:
                           type: string
                         type: array
-                      description: |-
-                        Attributes declares desired values. Exact ownership is the default.
-                        Subset ownership preserves unmanaged values and removes previously claimed values when omitted.
+                      description: Attributes owns complete attribute value sets. Omitted attributes are preserved.
                       maxProperties: 128
                       type: object
                     dn:
@@ -118,6 +86,16 @@ spec:
                       maxLength: 8192
                       minLength: 1
                       type: string
+                    sharedAttributes:
+                      additionalProperties:
+                        items:
+                          type: string
+                        type: array
+                      description: |-
+                        SharedAttributes owns only these values and preserves values managed elsewhere.
+                        Changed, empty, or omitted declarations remove previously claimed values.
+                      maxProperties: 128
+                      type: object
                   required:
                     - dn
                   type: object
@@ -261,7 +239,7 @@ spec:
                       type: string
                     type: array
                   description: |-
-                    OwnedAttributeValues is a bounded durable intent ledger for inline Subset values.
+                    OwnedAttributeValues is a bounded durable intent ledger for inline shared values.
                     It is persisted before directory writes and compacted only after verified observation.
                     Secret values are never recorded here.
                   maxProperties: 256

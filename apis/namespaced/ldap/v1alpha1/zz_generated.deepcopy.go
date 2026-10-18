@@ -113,11 +113,20 @@ func (in *EntryParameters) DeepCopyInto(out *EntryParameters) {
 			(*out)[key] = outVal
 		}
 	}
-	if in.AttributeOwnership != nil {
-		in, out := &in.AttributeOwnership, &out.AttributeOwnership
-		*out = make(map[string]AttributeOwnershipPolicy, len(*in))
+	if in.SharedAttributes != nil {
+		in, out := &in.SharedAttributes, &out.SharedAttributes
+		*out = make(map[string][]string, len(*in))
 		for key, val := range *in {
-			(*out)[key] = val
+			var outVal []string
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make([]string, len(*in))
+				copy(*out, *in)
+			}
+			(*out)[key] = outVal
 		}
 	}
 	if in.AttributeSecretRefs != nil {
@@ -125,38 +134,6 @@ func (in *EntryParameters) DeepCopyInto(out *EntryParameters) {
 		*out = make(map[string]v2.LocalSecretKeySelector, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
-		}
-	}
-	if in.AdditiveAttributes != nil {
-		in, out := &in.AdditiveAttributes, &out.AdditiveAttributes
-		*out = make(map[string][]string, len(*in))
-		for key, val := range *in {
-			var outVal []string
-			if val == nil {
-				(*out)[key] = nil
-			} else {
-				inVal := (*in)[key]
-				in, out := &inVal, &outVal
-				*out = make([]string, len(*in))
-				copy(*out, *in)
-			}
-			(*out)[key] = outVal
-		}
-	}
-	if in.AbsentAttributes != nil {
-		in, out := &in.AbsentAttributes, &out.AbsentAttributes
-		*out = make(map[string][]string, len(*in))
-		for key, val := range *in {
-			var outVal []string
-			if val == nil {
-				(*out)[key] = nil
-			} else {
-				inVal := (*in)[key]
-				in, out := &inVal, &outVal
-				*out = make([]string, len(*in))
-				copy(*out, *in)
-			}
-			(*out)[key] = outVal
 		}
 	}
 }

@@ -107,12 +107,12 @@ spec:
             {{- else -}}
               {{- $ldapPassword = printf "{CRYPT}%s" (bcrypt ($password | b64dec)) | b64enc -}}
             {{- end -}}
-            {{- $attributes := dict "cn" (list $spec.cn) "sn" (list "Service") "objectClass" (list "inetOrgPerson") -}}
+            {{- $attributes := dict "cn" (list $spec.cn) "sn" (list "Service") -}}
             {{- if hasKey $spec "description" -}}
               {{- $_ := set $attributes "description" (ternary (list $spec.description) (list) (ne $spec.description "")) -}}
             {{- end -}}
             {{- $secretName := dig "metadata" "name" "" ($secret | default dict) -}}
-            {{- $parameters := dict "dn" (printf "uid=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "attributeOwnership" (dict "objectClass" "Subset") "attributeSecretRefs" (dict "userPassword" (dict "name" $secretName "key" "ldap-password")) -}}
+            {{- $parameters := dict "dn" (printf "uid=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "sharedAttributes" (dict "objectClass" (list "inetOrgPerson")) "attributeSecretRefs" (dict "userPassword" (dict "name" $secretName "key" "ldap-password")) -}}
             {{- $entryReady := and $entry (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True") -}}
             {{- $generationMatches := and $entry (eq (toString (dig "status" "atProvider" "observedGeneration" 0 $entry)) (toString $entry.metadata.generation)) -}}
             {{- $versionMatches := and $entry $secret (eq (dig "status" "atProvider" "observedSecretVersions" "userpassword" "" $entry) $secret.metadata.resourceVersion) -}}

@@ -7,11 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/go-ldap/ldap/v3"
 )
@@ -142,34 +140,3 @@ func TestBindCancellationClosesBlockedSocket(t *testing.T) {
 		t.Fatal("canceled bind retained its socket")
 	}
 }
-func TestMatchedValueConflictsFailBeforeModifying(t *testing.T) {
-	conn := &fixtureLDAP{entry: ldap.NewEntry("cn=group,dc=example", map[string][]string{"member": {"uid=Sentinel,dc=example"}})}
-	conn.searchFn = func(request *ldap.SearchRequest) (*ldap.SearchResult, error) {
-		if len(request.Controls) == 0 {
-			return &ldap.SearchResult{Entries: []*ldap.Entry{conn.entry}}, nil
-		}
-		control := request.Controls[0].(*ldap.ControlString)
-		if control.GetControlType() != matchedValuesControlOID || !control.Criticality {
-			t.Fatal("policy comparison did not require standard matched-values control")
-		}
-		// A real server matched both spellings to the same stored value.
-		return &ldap.SearchResult{Entries: []*ldap.Entry{conn.entry}}, nil
-	}
-	external := &ldapExternal{conn: conn, additive: map[string][]string{"member": {"UID=sentinel,DC=example"}}, absent: map[string][]string{"member": {"uid=Sentinel,dc=example"}}}
-	entry := testEntry("ProviderConfig", "fixture")
-	entry.Spec.ForProvider.DN = conn.entry.DN
-	if _, err := external.Update(context.Background(), entry); err == nil || !strings.Contains(err.Error(), "directory-equivalent") {
-		t.Fatalf("contradictory policy was accepted: %v", err)
-	}
-	if len(conn.changes) > 0 {
-		t.Fatal("conflicting policy changed directory")
-	}
-	conn.searchFn = func(*ldap.SearchRequest) (*ldap.SearchResult, error) {
-		return nil, ldap.NewError(ldap.LDAPResultUnavailableCriticalExtension, fmt.Errorf("unsupported"))
-	}
-	if err := external.validateValuePolicies(context.Background(), entry.Spec.ForProvider.DN); err == nil || !strings.Contains(err.Error(), "RFC3876") {
-		t.Fatalf("unsupported mandatory control not explained: %v", err)
-	}
-}
-
-var _ managed.ExternalClient = &ldapExternal{}

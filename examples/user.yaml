@@ -20,11 +20,10 @@ spec:
         - Application
       sn:
         - Service
-      objectClass:
-        - inetOrgPerson
     attributeSecretRefs:
       userPassword:
         name: application-password
         key: password
-    attributeOwnership:
-      objectClass: Subset
+    sharedAttributes:
+      objectClass:
+        - inetOrgPerson

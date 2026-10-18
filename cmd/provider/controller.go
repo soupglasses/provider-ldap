@@ -69,14 +69,11 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 	if err != nil {
 		return nil, err
 	}
-	var additive map[string][]string
-	var absent map[string][]string
+	var shared map[string][]string
 	if entry.GetDeletionTimestamp().IsZero() {
-		additive = entry.Spec.ForProvider.AdditiveAttributes
-		absent = entry.Spec.ForProvider.AbsentAttributes
+		shared = entry.Spec.ForProvider.SharedAttributes
 	}
-	external := &ldapExternal{conn: conn, desired: desired, additive: additive, absent: absent, secretVersions: versions, kube: c.kube, ownership: entry.Spec.ForProvider.AttributeOwnership, identity: &entryIdentity{kube: c.kube, scope: scope}}
-	external.cancelOnContext(ctx)
+	external := &ldapExternal{conn: conn, desired: desired, shared: shared, secretVersions: versions, kube: c.kube, identity: &entryIdentity{kube: c.kube, scope: scope}}
 	if _, err := external.refreshIdentity(ctx, entry); err != nil {
 		external.Disconnect(ctx)
 		return nil, err

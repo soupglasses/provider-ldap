@@ -74,48 +74,14 @@ func validateParameters(p entryapi.EntryParameters) error {
 	if err := validateMap("exact", secretNames); err != nil {
 		return err
 	}
-	if err := validateMap("additive", p.AdditiveAttributes); err != nil {
+	if err := validateMap("shared", p.SharedAttributes); err != nil {
 		return err
-	}
-	if err := validateMap("absent", p.AbsentAttributes); err != nil {
-		return err
-	}
-	for key, present := range p.AdditiveAttributes {
-		for absentKey, absent := range p.AbsentAttributes {
-			if canonicalAttributeName(key) == canonicalAttributeName(absentKey) {
-				for _, value := range present {
-					if contains(absent, value) {
-						return fmt.Errorf("attribute %s declares the same value present and absent", key)
-					}
-				}
-			}
-		}
-	}
-	for key, mode := range p.AttributeOwnership {
-		if len(key) > 128 || !attributeName.MatchString(key) {
-			return fmt.Errorf("invalid LDAP ownership attribute name")
-		}
-		if mode != entryapi.AttributeOwnershipExact && mode != entryapi.AttributeOwnershipSubset {
-			return fmt.Errorf("unknown attribute ownership policy")
-		}
-		if mode == entryapi.AttributeOwnershipSubset {
-			for secretKey := range p.AttributeSecretRefs {
-				if canonicalAttributeName(secretKey) == canonicalAttributeName(key) {
-					return fmt.Errorf("Secret references cannot use Subset ownership")
-				}
-			}
-		}
 	}
 	// A replace-owned RDN attribute must include its naming value to avoid illegal renames.
 	for _, rdn := range dn.RDNs[0].Attributes {
 		for key, values := range p.Attributes {
-			if strings.EqualFold(key, rdn.Type) && len(p.AttributeOwnership) == 0 && !contains(values, rdn.Value) {
+			if strings.EqualFold(key, rdn.Type) && !contains(values, rdn.Value) {
 				return fmt.Errorf("attribute %s must include the DN naming value", key)
-			}
-		}
-		for key, values := range p.AbsentAttributes {
-			if canonicalAttributeName(key) == canonicalAttributeName(rdn.Type) && contains(values, rdn.Value) {
-				return fmt.Errorf("DN naming values cannot be declared absent")
 			}
 		}
 		for key := range p.AttributeSecretRefs {
@@ -163,15 +129,13 @@ type ldapConnection interface {
 	Close() error
 }
 type ldapExternal struct {
-	kube      client.Client
-	ownership map[string]entryapi.AttributeOwnershipPolicy
-	identity  *entryIdentity
-	ledger    map[string][]string
+	kube     client.Client
+	identity *entryIdentity
+	ledger   map[string][]string
 
 	conn           ldapConnection
 	desired        map[string][]string
-	additive       map[string][]string
-	absent         map[string][]string
+	shared         map[string][]string
 	secretVersions map[string]string
 	schema         attributeSchema
 	stopCancel     func() bool
@@ -200,10 +164,7 @@ func (e *ldapExternal) read(ctx context.Context, dn string) (*ldap.Entry, error)
 	for key := range e.desired {
 		selected[key] = nil
 	}
-	for key := range e.additive {
-		selected[key] = nil
-	}
-	for key := range e.absent {
+	for key := range e.shared {
 		selected[key] = nil
 	}
 	for key := range e.ledger {
@@ -281,11 +242,8 @@ func (e *ldapExternal) hasValue(ctx context.Context, observed *ldap.Entry, key, 
 	return same, nil
 }
 func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry, entry *entryapi.Entry) (bool, error) {
-	if err := e.validateValuePolicies(ctx, observed.DN); err != nil {
-		return false, err
-	}
 	for key, want := range e.desired {
-		if !e.isSubset(key) && len(attributeValues(observed, key)) != len(want) {
+		if len(attributeValues(observed, key)) != len(want) {
 			return false, nil
 		}
 		for _, value := range want {
@@ -298,24 +256,13 @@ func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry, entry
 			}
 		}
 	}
-	for key, want := range e.additive {
+	for key, want := range e.shared {
 		for _, value := range want {
 			same, err := e.hasValue(ctx, observed, key, value)
 			if err != nil {
 				return false, err
 			}
 			if !same {
-				return false, nil
-			}
-		}
-	}
-	for key, values := range e.absent {
-		for _, value := range values {
-			present, err := e.hasValue(ctx, observed, key, value)
-			if err != nil {
-				return false, err
-			}
-			if present {
 				return false, nil
 			}
 		}
@@ -392,7 +339,7 @@ func (e *ldapExternal) Create(ctx context.Context, mg resource.Managed) (managed
 		return managed.ExternalCreation{}, err
 	}
 	attrs := map[string][]string{}
-	for _, source := range []map[string][]string{e.desired, e.additive} {
+	for _, source := range []map[string][]string{e.desired, e.shared} {
 		for key, values := range source {
 			if len(values) > 0 {
 				attrs[key] = append([]string{}, values...)
@@ -440,9 +387,6 @@ func (e *ldapExternal) Create(ctx context.Context, mg resource.Managed) (managed
 	return managed.ExternalCreation{}, nil
 }
 func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap.Entry, entry *entryapi.Entry) (*ldap.ModifyRequest, error) {
-	if err := e.validateValuePolicies(ctx, dn); err != nil {
-		return nil, err
-	}
 	controls, err := e.assertionControls()
 	if err != nil {
 		return nil, err
@@ -450,8 +394,8 @@ func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap
 	request := ldap.NewModifyRequest(dn, controls)
 	// Every operation is one atomic LDAP Modify, so auxiliary classes and their
 	// required attributes become valid together. Add never replaces foreign values.
-	for _, key := range keys(e.additive) {
-		for _, value := range e.additive[key] {
+	for _, key := range keys(e.shared) {
+		for _, value := range e.shared[key] {
 			present, err := e.hasValue(ctx, observed, key, value)
 			if err != nil {
 				return nil, err
@@ -463,18 +407,6 @@ func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap
 	}
 	for _, key := range keys(e.desired) {
 		want := e.desired[key]
-		if e.isSubset(key) {
-			for _, value := range want {
-				present, err := e.hasValue(ctx, observed, key, value)
-				if err != nil {
-					return nil, err
-				}
-				if !present {
-					request.Add(key, []string{value})
-				}
-			}
-			continue
-		}
 		same := len(attributeValues(observed, key)) == len(want)
 		if same {
 			for _, value := range want {
@@ -490,17 +422,6 @@ func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap
 		}
 		if !same {
 			request.Replace(key, want)
-		}
-	}
-	for _, key := range keys(e.absent) {
-		for _, value := range e.absent[key] {
-			present, err := e.hasValue(ctx, observed, key, value)
-			if err != nil {
-				return nil, err
-			}
-			if present {
-				request.Delete(key, []string{value})
-			}
 		}
 	}
 	retired, err := e.retiredValues(ctx, dn, entry)

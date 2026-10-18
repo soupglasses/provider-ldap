@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/go-ldap/ldap/v3"
-	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
 )
 
 // Only the OID/NAME header of the server's valid RFC4512 AttributeTypeDescription
@@ -114,52 +113,13 @@ func (e *ldapExternal) loadSchema(ctx context.Context, dn string) error {
 	if err != nil {
 		return err
 	}
-	e.additive, err = e.canonicalAttributes(e.additive)
+	e.shared, err = e.canonicalAttributes(e.shared)
 	if err != nil {
 		return err
-	}
-	e.absent, err = e.canonicalAttributes(e.absent)
-	if err != nil {
-		return err
-	}
-	canonicalOwnership := map[string]entryapi.AttributeOwnershipPolicy{}
-	for description, mode := range e.ownership {
-		key, err := e.schema.key(description)
-		if err != nil {
-			return err
-		}
-		if _, duplicate := canonicalOwnership[key]; duplicate {
-			return fmt.Errorf("attribute ownership aliases another declared policy")
-		}
-		if mode != entryapi.AttributeOwnershipExact && mode != entryapi.AttributeOwnershipSubset {
-			return fmt.Errorf("unknown attribute ownership policy")
-		}
-		canonicalOwnership[key] = mode
-	}
-	e.ownership = canonicalOwnership
-	for description := range e.secretVersions {
-		key, err := e.schema.key(description)
-		if err != nil {
-			return err
-		}
-		if e.isSubset(key) {
-			return fmt.Errorf("Secret references cannot use Subset ownership")
-		}
-	}
-	for key := range e.ownership {
-		if _, legacy := e.additive[key]; legacy {
-			return fmt.Errorf("attributeOwnership applies to attributes, not additiveAttributes")
-		}
-		if _, legacy := e.absent[key]; legacy {
-			return fmt.Errorf("attributeOwnership applies to attributes, not absentAttributes")
-		}
 	}
 	for key := range e.desired {
-		if _, ok := e.additive[key]; ok {
-			return fmt.Errorf("exact-owned attribute %s aliases an additive attribute", key)
-		}
-		if _, ok := e.absent[key]; ok {
-			return fmt.Errorf("exact-owned attribute %s aliases an absent attribute", key)
+		if _, ok := e.shared[key]; ok {
+			return fmt.Errorf("exact-owned attribute %s aliases a shared attribute", key)
 		}
 	}
 	parsedDN, err := parseDN(dn)
@@ -171,11 +131,8 @@ func (e *ldapExternal) loadSchema(ctx context.Context, dn string) error {
 		if err != nil {
 			return err
 		}
-		if values, owned := e.desired[key]; owned && !e.isSubset(key) && !contains(values, naming.Value) {
+		if values, owned := e.desired[key]; owned && !contains(values, naming.Value) {
 			return fmt.Errorf("exact-owned naming attribute %s must contain the DN naming value", key)
-		}
-		if contains(e.absent[key], naming.Value) {
-			return fmt.Errorf("DN naming values cannot be declared absent")
 		}
 		for description := range e.secretVersions {
 			secretKey, err := e.schema.key(description)
@@ -184,13 +141,6 @@ func (e *ldapExternal) loadSchema(ctx context.Context, dn string) error {
 			}
 			if secretKey == key {
 				return fmt.Errorf("DN naming attributes cannot use Secret references")
-			}
-		}
-	}
-	for key, values := range e.additive {
-		for _, value := range values {
-			if contains(e.absent[key], value) {
-				return fmt.Errorf("attribute %s declares the same value present and absent", key)
 			}
 		}
 	}

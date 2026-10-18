@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # provider-ldap
 
 A native Crossplane provider that reconciles LDAP entries through
-[go-ldap](https://github.com/go-ldap/ldap). Declare exact attribute ownership or
-manage selected values with Subset ownership while preserving other writers' values.
+[go-ldap](https://github.com/go-ldap/ldap). Declare exact values in `attributes`.
+Use `sharedAttributes` when other writers also manage an attribute.
 
 ## Install
 
@@ -19,7 +19,7 @@ kind: Provider
 metadata:
   name: ldap
 spec:
-  package: ghcr.io/soupglasses/provider-ldap:v0.4.0
+  package: ghcr.io/soupglasses/provider-ldap:v0.5.0
 ```
 
 The [runtime example](tests/provider.yaml) includes resource limits, probes and
@@ -36,9 +36,8 @@ kubectl wait --namespace applications entry/service --for=condition=Ready --time
 ```
 
 An Entry declares its desired `forProvider.dn`, inline `attributes`, and
-`attributeSecretRefs` for sensitive values. Use `attributeOwnership: {member: Subset}`
-to manage selected values while preserving others. DN changes rename or move the
-same LDAP identity.
+`attributeSecretRefs` for sensitive values. Put values shared with other writers
+in `sharedAttributes`. Changing the DN renames or moves the same LDAP identity.
 Secret values stay out of Entry status. TLS defaults to enabled.
 
 Omitting `managementPolicies` includes deletion. The example explicitly uses

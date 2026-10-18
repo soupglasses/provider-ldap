@@ -130,7 +130,7 @@ spec:
               - /tests/check
               - -test.run=^TestLDAPState$
               - -test.v
-    - name: additive-values-preserve-external-values
+    - name: shared-values-preserve-external-values
       try:
         - apply:
             resource:
@@ -154,7 +154,7 @@ spec:
                       - shared
                     description:
                       - Managed group
-                  additiveAttributes:
+                  sharedAttributes:
                     objectClass:
                       - groupOfNames
                     member:
@@ -178,7 +178,7 @@ spec:
                   attributes:
                     employeeNumber:
                       - "123"
-                  additiveAttributes:
+                  sharedAttributes:
                     objectClass:
                       - groupOfNames
                       - extensibleObject
@@ -246,7 +246,7 @@ spec:
               - /tests/check
               - -test.run=^TestLDAPState$
               - -test.v
-    - name: schema-alias-and-matching-rule-ownership
+    - name: schema-alias-and-map-overlap
       try:
         - apply:
             resource:
@@ -268,7 +268,7 @@ spec:
                   attributes:
                     2.5.4.3:
                       - Aliases
-                  additiveAttributes:
+                  sharedAttributes:
                     objectClass:
                       - groupOfNames
                     member:
@@ -314,7 +314,7 @@ spec:
                   attributes:
                     cn:
                       - Denied
-                  additiveAttributes:
+                  sharedAttributes:
                     2.5.4.3:
                       - Denied
                     objectClass:
@@ -348,56 +348,6 @@ spec:
               apiVersion: ldap.finnes.dev/v1alpha1
               kind: Entry
               name: alias-overlap
-        - patch:
-            resource:
-              apiVersion: ldap.finnes.dev/v1alpha1
-              kind: Entry
-              metadata:
-                name: alias-rdn
-              spec:
-                forProvider:
-                  absentAttributes:
-                    member:
-                      - UID=sentinel,OU=users,DC=example,DC=test
-        - assert:
-            resource:
-              apiVersion: ldap.finnes.dev/v1alpha1
-              kind: Entry
-              metadata:
-                name: alias-rdn
-              status:
-                (conditions[?type == 'Synced'].status | [0]): "False"
-        - command:
-            entrypoint: kubectl
-            args:
-              - exec
-              - -n
-              - ldap-test
-              - deployment/ldap
-              - --
-              - env
-              - LDAP_EXPECT_DN=cn=Aliases,ou=groups,dc=example,dc=test
-              - 'LDAP_EXPECT_JSON={"member": ["uid=sentinel,ou=users,dc=example,dc=test"]}'
-              - /tests/check
-              - -test.run=^TestLDAPState$
-              - -test.v
-        - patch:
-            resource:
-              apiVersion: ldap.finnes.dev/v1alpha1
-              kind: Entry
-              metadata:
-                name: alias-rdn
-              spec:
-                forProvider:
-                  absentAttributes: null
-        - assert:
-            resource:
-              apiVersion: ldap.finnes.dev/v1alpha1
-              kind: Entry
-              metadata:
-                name: alias-rdn
-              status:
-                (conditions[?type == 'Synced'].status | [0]): "True"
         - delete:
             ref:
               apiVersion: ldap.finnes.dev/v1alpha1
@@ -483,7 +433,7 @@ spec:
               metadata:
                 name: service
               (contains(to_string(@), 'fixture-password-2')): false
-    - name: native-subset-ownership-and-modifydn
+    - name: shared-values-retirement-and-modifydn
       try:
         - command:
             entrypoint: kubectl
@@ -516,13 +466,11 @@ spec:
                   attributes:
                     cn:
                       - subset-owned
+                  sharedAttributes:
                     objectClass:
                       - groupOfNames
                     member:
                       - uid=sentinel-a,ou=users,dc=example,dc=test
-                  attributeOwnership:
-                    objectClass: Subset
-                    member: Subset
         - assert:
             resource:
               apiVersion: ldap.finnes.dev/v1alpha1
@@ -569,7 +517,7 @@ spec:
                 name: subset-owned
               spec:
                 forProvider:
-                  attributes:
+                  sharedAttributes:
                     member:
                       - uid=sentinel-b,ou=users,dc=example,dc=test
         - command:
@@ -598,7 +546,7 @@ spec:
                 name: subset-owned
               spec:
                 forProvider:
-                  attributes:
+                  sharedAttributes:
                     member:
                       - UID=sentinel-b,OU=users,DC=example,DC=test
         - assert:
@@ -636,7 +584,7 @@ spec:
                 name: subset-owned
               spec:
                 forProvider:
-                  attributes:
+                  sharedAttributes:
                     member: []
         - command:
             entrypoint: kubectl
@@ -664,7 +612,7 @@ spec:
                 name: subset-owned
               spec:
                 forProvider:
-                  attributes:
+                  sharedAttributes:
                     member:
                       - uid=sentinel-a,ou=users,dc=example,dc=test
         - command:
@@ -693,9 +641,7 @@ spec:
                 name: subset-owned
               spec:
                 forProvider:
-                  attributes:
-                    member: null
-                  attributeOwnership:
+                  sharedAttributes:
                     member: null
         - command:
             entrypoint: kubectl
@@ -723,11 +669,9 @@ spec:
                 name: subset-owned
               spec:
                 forProvider:
-                  attributes:
+                  sharedAttributes:
                     member:
                       - uid=sentinel-c,ou=users,dc=example,dc=test
-                  attributeOwnership:
-                    member: Subset
         - command:
             entrypoint: kubectl
             args:
@@ -949,13 +893,11 @@ spec:
                   attributes:
                     cn:
                       - identity-recovery
+                  sharedAttributes:
                     objectClass:
                       - groupOfNames
                     member:
                       - uid=sentinel-a,ou=users,dc=example,dc=test
-                  attributeOwnership:
-                    objectClass: Subset
-                    member: Subset
         - assert:
             resource:
               apiVersion: ldap.finnes.dev/v1alpha1

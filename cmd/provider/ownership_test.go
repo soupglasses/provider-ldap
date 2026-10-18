@@ -24,8 +24,7 @@ func subsetFixture(t *testing.T, claimed []string) (*ldapExternal, *entryapi.Ent
 	entry.Generation = 1
 	entry.Spec.ManagementPolicies = xpv2.ManagementPolicies{xpv2.ManagementActionAll}
 	entry.Spec.ForProvider.DN = "cn=group,dc=example"
-	entry.Spec.ForProvider.Attributes = map[string][]string{"member": claimed}
-	entry.Spec.ForProvider.AttributeOwnership = map[string]entryapi.AttributeOwnershipPolicy{"member": entryapi.AttributeOwnershipSubset}
+	entry.Spec.ForProvider.SharedAttributes = map[string][]string{"member": claimed}
 	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&entryapi.Entry{}).WithObjects(entry).Build()
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(entry), entry); err != nil {
 		t.Fatal(err)
@@ -33,22 +32,18 @@ func subsetFixture(t *testing.T, claimed []string) (*ldapExternal, *entryapi.Ent
 	values := append([]string{"human"}, claimed...)
 	conn := &fixtureLDAP{entry: ldap.NewEntry(entry.Spec.ForProvider.DN, map[string][]string{"member": values})}
 	matchedValueFixture(t, conn)
-	external := &ldapExternal{kube: kube, conn: conn, desired: map[string][]string{"member": claimed}, ownership: entry.Spec.ForProvider.AttributeOwnership}
+	external := &ldapExternal{kube: kube, conn: conn, shared: map[string][]string{"member": claimed}}
 	return external, entry, conn
 }
 func updateSubsetSpec(t *testing.T, external *ldapExternal, entry *entryapi.Entry, values []string, omit bool) {
 	t.Helper()
 	entry.Generation++
 	if omit {
-		entry.Spec.ForProvider.Attributes = nil
-		entry.Spec.ForProvider.AttributeOwnership = nil
-		external.desired = nil
-		external.ownership = nil
+		entry.Spec.ForProvider.SharedAttributes = nil
+		external.shared = nil
 	} else {
-		entry.Spec.ForProvider.Attributes = map[string][]string{"member": values}
-		entry.Spec.ForProvider.AttributeOwnership = map[string]entryapi.AttributeOwnershipPolicy{"member": entryapi.AttributeOwnershipSubset}
-		external.desired = entry.Spec.ForProvider.Attributes
-		external.ownership = entry.Spec.ForProvider.AttributeOwnership
+		entry.Spec.ForProvider.SharedAttributes = map[string][]string{"member": values}
+		external.shared = entry.Spec.ForProvider.SharedAttributes
 	}
 	if err := external.kube.Update(context.Background(), entry); err != nil {
 		t.Fatal(err)
@@ -86,7 +81,7 @@ func TestSubsetAdoptsCurrentValuesAndRetiresAcrossRestart(t *testing.T) {
 	if err := external.kube.Get(ctx, client.ObjectKeyFromObject(entry), recovered); err != nil {
 		t.Fatal(err)
 	}
-	restarted := &ldapExternal{kube: external.kube, conn: conn, ownership: recovered.Spec.ForProvider.AttributeOwnership, desired: recovered.Spec.ForProvider.Attributes}
+	restarted := &ldapExternal{kube: external.kube, conn: conn, shared: recovered.Spec.ForProvider.SharedAttributes}
 	updateSubsetSpec(t, restarted, recovered, []string{"third"}, false)
 	if _, err := restarted.Update(ctx, recovered); err != nil {
 		t.Fatal(err)
@@ -208,13 +203,6 @@ func TestSubsetLedgerQuotaReleasesConfirmedAbsentHistory(t *testing.T) {
 		t.Fatal("quota cleanup retained absent history or lost new intent")
 	}
 }
-func TestSecretReferencesCannotUseSubset(t *testing.T) {
-	p := entryapi.EntryParameters{DN: "uid=service,dc=example", AttributeOwnership: map[string]entryapi.AttributeOwnershipPolicy{"userPassword": entryapi.AttributeOwnershipSubset}, AttributeSecretRefs: map[string]xpv2.LocalSecretKeySelector{"userPassword": {LocalSecretReference: xpv2.LocalSecretReference{Name: "credentials"}, Key: "password"}}}
-	if err := validateParameters(p); err == nil {
-		t.Fatal("Secret values could enter ownership history")
-	}
-}
-
 func TestSubsetStaleIntentCannotMutateDirectory(t *testing.T) {
 	ctx := context.Background()
 	external, entry, conn := subsetFixture(t, []string{"first"})
@@ -239,5 +227,32 @@ func TestSubsetStaleIntentCannotMutateDirectory(t *testing.T) {
 	}
 	if contains(persisted.Status.OwnedAttributeValues["member"], "second") {
 		t.Fatal("stale intent escaped optimistic lock")
+	}
+}
+
+func TestSharedReplacementIsAtomicAndPreservesConcurrentValues(t *testing.T) {
+	ctx := context.Background()
+	external, entry, conn := subsetFixture(t, []string{"old-sentinel"})
+	if _, err := external.Observe(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	updateSubsetSpec(t, external, entry, []string{"new-sentinel"}, false)
+	external.desired = map[string][]string{"description": {"updated"}}
+	conn.beforeModify = func() {
+		for _, attr := range conn.entry.Attributes {
+			if attr.Name == "member" {
+				attr.Values = append(attr.Values, "concurrent-human")
+			}
+		}
+	}
+	if _, err := external.Update(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	values := attributeValues(conn.entry, "member")
+	if contains(values, "old-sentinel") || !contains(values, "new-sentinel") || !contains(values, "human") || !contains(values, "concurrent-human") {
+		t.Fatalf("shared replacement lost unmanaged values: %v", values)
+	}
+	if len(conn.changes) != 1 || len(conn.changes[0].Changes) != 3 {
+		t.Fatal("shared add, owned retirement, and exact replace were not one atomic LDAP Modify")
 	}
 }

@@ -12,45 +12,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
-// AttributeOwnershipPolicy controls whether an attribute owns its complete set or only declared values.
-// +kubebuilder:validation:Enum=Exact;Subset
-type AttributeOwnershipPolicy string
-
-const (
-	AttributeOwnershipExact  AttributeOwnershipPolicy = "Exact"
-	AttributeOwnershipSubset AttributeOwnershipPolicy = "Subset"
-)
-
 // EntryParameters declares attribute ownership. LDAP attribute names are case insensitive.
 type EntryParameters struct {
 	// DN is the desired distinguished name. Changes rename the same LDAP entry.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=8192
 	DN string `json:"dn"`
-	// Attributes declares desired values. Exact ownership is the default.
-	// Subset ownership preserves unmanaged values and removes previously claimed values when omitted.
+	// Attributes owns complete attribute value sets. Omitted attributes are preserved.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
 	Attributes map[string][]string `json:"attributes,omitempty"`
-	// AttributeOwnership selects Exact (default) or Subset for keys in Attributes.
-	// Secret references always use Exact ownership.
+	// SharedAttributes owns only these values and preserves values managed elsewhere.
+	// Changed, empty, or omitted declarations remove previously claimed values.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
-	AttributeOwnership map[string]AttributeOwnershipPolicy `json:"attributeOwnership,omitempty"`
+	SharedAttributes map[string][]string `json:"sharedAttributes,omitempty"`
 	// AttributeSecretRefs owns a single value from a local Secret for each declared attribute.
 	// Secret values are never copied to status or connection details.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
 	AttributeSecretRefs map[string]xpv2.LocalSecretKeySelector `json:"attributeSecretRefs,omitempty"`
-	// AdditiveAttributes ensures values are present with atomic LDAP Add operations, preserving all other values.
-	// +optional
-	// +kubebuilder:validation:MaxProperties=128
-	AdditiveAttributes map[string][]string `json:"additiveAttributes,omitempty"`
-	// AbsentAttributes removes only these values, preserving all other values.
-	// Values must be distinct from additive values under the directory's equality rules.
-	// +optional
-	// +kubebuilder:validation:MaxProperties=128
-	AbsentAttributes map[string][]string `json:"absentAttributes,omitempty"`
 }
 
 type EntryObservation struct {
@@ -66,7 +47,7 @@ type EntrySpec struct {
 	ForProvider              EntryParameters `json:"forProvider"`
 }
 type EntryStatus struct {
-	// OwnedAttributeValues is a bounded durable intent ledger for inline Subset values.
+	// OwnedAttributeValues is a bounded durable intent ledger for inline shared values.
 	// It is persisted before directory writes and compacted only after verified observation.
 	// Secret values are never recorded here.
 	// +optional

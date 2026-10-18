@@ -14,7 +14,7 @@ import (
 const matchedValuesControlOID = "1.2.826.0.1.3344810.2.3"
 
 // RFC3876 lets the server decide equality without reproducing its matching rules.
-// It is required only when the same attribute has present and absent value policies.
+// It is required when retiring previous shared values.
 func (e *ldapExternal) matchedValues(ctx context.Context, dn, key, value string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -50,34 +50,4 @@ func (e *ldapExternal) matchedValues(ctx context.Context, dn, key, value string)
 		}
 	}
 	return values, nil
-}
-func (e *ldapExternal) validateValuePolicies(ctx context.Context, dn string) error {
-	for key, present := range e.additive {
-		absent := e.absent[key]
-		if len(present) == 0 || len(absent) == 0 {
-			continue
-		}
-		seen := map[string]bool{}
-		for _, value := range present {
-			matches, err := e.matchedValues(ctx, dn, key, value)
-			if err != nil {
-				return err
-			}
-			for _, matched := range matches {
-				seen[matched] = true
-			}
-		}
-		for _, value := range absent {
-			matches, err := e.matchedValues(ctx, dn, key, value)
-			if err != nil {
-				return err
-			}
-			for _, matched := range matches {
-				if seen[matched] {
-					return fmt.Errorf("attribute %s declares directory-equivalent values both present and absent", key)
-				}
-			}
-		}
-	}
-	return nil
 }

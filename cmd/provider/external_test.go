@@ -14,6 +14,7 @@ import (
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -115,9 +116,10 @@ func TestAtomicAddPreservesConcurrentMembership(t *testing.T) {
 			}
 		}
 	}
-	external := &ldapExternal{conn: conn, desired: map[string][]string{"description": {"new"}}, additive: map[string][]string{"member": {"uid=sentinel,dc=example"}}}
+	external := &ldapExternal{conn: conn, desired: map[string][]string{"description": {"new"}}, shared: map[string][]string{"member": {"uid=sentinel,dc=example"}}}
 	entry := testEntry("ProviderConfig", "fixture")
 	entry.Spec.ForProvider.DN = dn
+	persistExternalFixture(t, external, entry)
 	if _, err := external.Update(context.Background(), entry); err != nil {
 		t.Fatal(err)
 	}
@@ -139,9 +141,10 @@ func TestConcurrentSentinelAddIsIdempotent(t *testing.T) {
 	conn.beforeModify = func() {
 		conn.entry.Attributes[0].Values = append(conn.entry.Attributes[0].Values, "uid=sentinel,dc=example")
 	}
-	external := &ldapExternal{conn: conn, additive: map[string][]string{"member": {"uid=sentinel,dc=example"}}}
+	external := &ldapExternal{conn: conn, shared: map[string][]string{"member": {"uid=sentinel,dc=example"}}}
 	entry := testEntry("ProviderConfig", "fixture")
 	entry.Spec.ForProvider.DN = dn
+	persistExternalFixture(t, external, entry)
 	if _, err := external.Update(context.Background(), entry); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +154,7 @@ func TestOwnedClearAndOmittedPreserve(t *testing.T) {
 	external := &ldapExternal{conn: conn, desired: map[string][]string{"description": {}}}
 	entry := testEntry("ProviderConfig", "fixture")
 	entry.Spec.ForProvider.DN = conn.entry.DN
+	persistExternalFixture(t, external, entry)
 	if _, err := external.Update(context.Background(), entry); err != nil {
 		t.Fatal(err)
 	}
@@ -160,9 +164,10 @@ func TestOwnedClearAndOmittedPreserve(t *testing.T) {
 }
 func TestCreateMaterializesEscapedAndMultivaluedRDN(t *testing.T) {
 	conn := &fixtureLDAP{}
-	external := &ldapExternal{conn: conn, additive: map[string][]string{"objectClass": {"inetOrgPerson"}}}
+	external := &ldapExternal{conn: conn, shared: map[string][]string{"objectClass": {"inetOrgPerson"}}}
 	entry := testEntry("ProviderConfig", "fixture")
 	entry.Spec.ForProvider.DN = `uid=service+cn=Media\, Server,dc=example`
+	persistExternalFixture(t, external, entry)
 	if _, err := external.Create(context.Background(), entry); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +182,7 @@ func TestCreateMaterializesEscapedAndMultivaluedRDN(t *testing.T) {
 func TestOwnershipValidation(t *testing.T) {
 	for _, p := range []entryapi.EntryParameters{
 		{DN: "cn=group,dc=example", Attributes: map[string][]string{"member": {"a"}, "Member": {"b"}}},
-		{DN: "cn=group,dc=example", Attributes: map[string][]string{"member": {"a"}}, AdditiveAttributes: map[string][]string{"MEMBER": {"b"}}},
+		{DN: "cn=group,dc=example", Attributes: map[string][]string{"member": {"a"}}, SharedAttributes: map[string][]string{"MEMBER": {"b"}}},
 		{DN: "cn=group,dc=example", Attributes: map[string][]string{"cn": {"different"}}},
 		{DN: "cn=group,dc=example", Attributes: map[string][]string{"bad key": {"a"}}},
 		{DN: "cn=group,dc=example", Attributes: map[string][]string{"description": {"a", "a"}}},
@@ -206,7 +211,7 @@ func TestSecretAttributeResolutionStaysLocal(t *testing.T) {
 
 func TestDeletionObservationIgnoresAttributeDrift(t *testing.T) {
 	conn := &fixtureLDAP{entry: ldap.NewEntry("cn=group,dc=example", map[string][]string{}), compareErr: fmt.Errorf("attribute comparison is unavailable")}
-	external := &ldapExternal{conn: conn, desired: map[string][]string{"description": {"desired"}}, additive: map[string][]string{"member": {"uid=sentinel,dc=example"}}}
+	external := &ldapExternal{conn: conn, desired: map[string][]string{"description": {"desired"}}, shared: map[string][]string{"member": {"uid=sentinel,dc=example"}}}
 	entry := testEntry("ProviderConfig", "fixture")
 	entry.Spec.ForProvider.DN = conn.entry.DN
 	now := metav1.Now()
@@ -252,5 +257,17 @@ func TestHealthyObservePreservesReadyTransitionTime(t *testing.T) {
 	observed, err := external.Observe(context.Background(), entry)
 	if err != nil || observed.ResourceUpToDate || entry.GetCondition(ready.Type).Status != corev1.ConditionFalse {
 		t.Fatalf("known drift retained Ready=True: %v", err)
+	}
+}
+
+func persistExternalFixture(t *testing.T, external *ldapExternal, entry *entryapi.Entry) {
+	t.Helper()
+	if len(external.shared) == 0 || external.kube != nil {
+		return
+	}
+	entry.Name = "fixture"
+	external.kube = fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&entryapi.Entry{}).WithObjects(entry).Build()
+	if err := external.kube.Get(context.Background(), client.ObjectKeyFromObject(entry), entry); err != nil {
+		t.Fatal(err)
 	}
 }

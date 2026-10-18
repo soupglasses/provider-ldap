@@ -85,11 +85,11 @@ spec:
             {{- $xr := .observed.composite.resource -}}
             {{- $spec := $xr.spec -}}
             {{- $entry := getComposedResource . "entry" -}}
-            {{- $attributes := dict "cn" (list $spec.cn) "objectClass" (list "groupOfNames") "member" (list $spec.sentinelDN) -}}
+            {{- $attributes := dict "cn" (list $spec.cn) -}}
             {{- if hasKey $spec "description" -}}
               {{- $_ := set $attributes "description" (ternary (list $spec.description) (list) (ne $spec.description "")) -}}
             {{- end -}}
-            {{- $parameters := dict "dn" (printf "cn=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "attributeOwnership" (dict "objectClass" "Subset" "member" "Subset") -}}
+            {{- $parameters := dict "dn" (printf "cn=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "sharedAttributes" (dict "objectClass" (list "groupOfNames") "member" (list $spec.sentinelDN)) -}}
             {{- $generationMatches := and $entry (eq (toString (dig "status" "atProvider" "observedGeneration" 0 $entry)) (toString $entry.metadata.generation)) -}}
             {{- $ready := not (empty (and $entry $generationMatches (deepEqual $entry.spec.forProvider $parameters) (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True"))) -}}
             ---

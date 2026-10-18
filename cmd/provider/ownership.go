@@ -18,25 +18,8 @@ const (
 	maxOwnedBytes      = 256 * 1024
 )
 
-func (e *ldapExternal) isSubset(key string) bool {
-	return e.ownership[key] == entryapi.AttributeOwnershipSubset
-}
-func (e *ldapExternal) ownsExactly(key string) bool {
-	_, declared := e.desired[key]
-	return declared && !e.isSubset(key)
-}
-func (e *ldapExternal) subsetDesired() map[string][]string {
-	var out map[string][]string
-	for key, values := range e.desired {
-		if e.isSubset(key) && len(values) > 0 {
-			if out == nil {
-				out = map[string][]string{}
-			}
-			out[key] = append([]string{}, values...)
-		}
-	}
-	return out
-}
+func (e *ldapExternal) ownsExactly(key string) bool        { _, declared := e.desired[key]; return declared }
+func (e *ldapExternal) subsetDesired() map[string][]string { return cloneOwnership(e.shared) }
 func (e *ldapExternal) canClaim(entry *entryapi.Entry, creating bool) bool {
 	policy := managed.NewManagementPoliciesResolver(true, entry.GetManagementPolicies())
 	return policy.ShouldUpdate() || (creating && policy.ShouldCreate())
@@ -137,10 +120,7 @@ func (e *ldapExternal) retiredValues(ctx context.Context, dn string, entry *entr
 		if e.ownsExactly(key) {
 			continue
 		}
-		wanted := append([]string{}, e.additive[key]...)
-		if e.isSubset(key) {
-			wanted = append(wanted, e.desired[key]...)
-		}
+		wanted := e.shared[key]
 		candidates := []string{}
 		for _, claim := range claims {
 			if !contains(wanted, claim) {
