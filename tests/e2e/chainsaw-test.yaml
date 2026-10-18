@@ -977,27 +977,35 @@ spec:
               - sh
               - -ec
               - 'printf ''%s\n'' ''dn: cn=composed,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''add: member'' ''member: uid=external-service,ou=users,dc=example,dc=test'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
-        - command:
-            entrypoint: kubectl
-            args:
-              - scale
-              - deployment
-              - -n
-              - crossplane-system
-              - -l
-              - app.kubernetes.io/name=ldap-provider
-              - --replicas=0
-        - command:
-            entrypoint: kubectl
-            args:
-              - wait
-              - pod
-              - -n
-              - crossplane-system
-              - -l
-              - app.kubernetes.io/name=ldap-provider
-              - --for=delete
-              - --timeout=90s
+        - patch:
+            resource:
+              apiVersion: pkg.crossplane.io/v1beta1
+              kind: DeploymentRuntimeConfig
+              metadata:
+                name: ldap
+              spec:
+                deploymentTemplate:
+                  spec:
+                    replicas: 0
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                namespace: crossplane-system
+                labels:
+                  app.kubernetes.io/name: ldap-provider
+              spec:
+                replicas: 0
+              (status.observedGeneration == metadata.generation): true
+        - error:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                namespace: crossplane-system
+                labels:
+                  app.kubernetes.io/name: ldap-provider
         - patch:
             resource:
               apiVersion: examples.ldap.finnes.dev/v1alpha1
@@ -1025,7 +1033,30 @@ spec:
               - --
               - sh
               - -ec
-              - 'printf ''%s\n'' ''dn: cn=composed,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''add: member'' ''member: uid=sentinel-b,ou=users,dc=example,dc=test'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
+              - 'printf ''%s\n'' ''dn: cn=composed,ou=groups,dc=example,dc=test'' ''changetype: modify'' ''add: member'' ''member: uid=sentinel-b,ou=users,dc=example,dc=test'' ''-'' ''delete: member'' ''member: uid=sentinel-a,ou=users,dc=example,dc=test'' ''-'' | ldapmodify -x -H ldap://127.0.0.1:1389 -D cn=admin,dc=example,dc=test -w disposable-fixture-password'
+        - command:
+            entrypoint: kubectl
+            args:
+              - exec
+              - -n
+              - ldap-test
+              - deployment/ldap
+              - --
+              - env
+              - LDAP_EXPECT_DN=cn=composed,ou=groups,dc=example,dc=test
+              - 'LDAP_EXPECT_JSON={"member": ["uid=sentinel-b,ou=users,dc=example,dc=test", "uid=external-service,ou=users,dc=example,dc=test"]}'
+              - /tests/check
+              - -test.run=^TestLDAPState$
+              - -test.v
+        - assert:
+            resource:
+              apiVersion: examples.ldap.finnes.dev/v1alpha1
+              kind: GroupOfNames
+              metadata:
+                name: composed
+              status:
+                (contains(managedSentinelDNs, `"uid=sentinel-a,ou=users,dc=example,dc=test"`)): true
+                (contains(managedSentinelDNs, `"uid=sentinel-b,ou=users,dc=example,dc=test"`)): true
         - patch:
             resource:
               apiVersion: examples.ldap.finnes.dev/v1alpha1
@@ -1061,16 +1092,16 @@ spec:
               - -n
               - crossplane-system
               - --timeout=180s
-        - command:
-            entrypoint: kubectl
-            args:
-              - scale
-              - deployment
-              - -n
-              - crossplane-system
-              - -l
-              - app.kubernetes.io/name=ldap-provider
-              - --replicas=1
+        - patch:
+            resource:
+              apiVersion: pkg.crossplane.io/v1beta1
+              kind: DeploymentRuntimeConfig
+              metadata:
+                name: ldap
+              spec:
+                deploymentTemplate:
+                  spec:
+                    replicas: 1
         - assert:
             resource:
               apiVersion: examples.ldap.finnes.dev/v1alpha1

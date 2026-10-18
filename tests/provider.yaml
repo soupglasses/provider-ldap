@@ -5,7 +5,7 @@ kind: Provider
 metadata:
   name: ldap
 spec:
-  package: ghcr.io/soupglasses/provider-ldap:v0.2.0
+  package: ghcr.io/soupglasses/provider-ldap:v0.3.0
   revisionHistoryLimit: 2
   runtimeConfigRef:
     name: ldap
