@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: ldap.finnes.dev/v1alpha1
+kind: Entry
+metadata:
+  name: application-readers
+  namespace: applications
+spec:
+  managementPolicies: [Observe, Create, Update]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: directory
+  forProvider:
+    dn: cn=application.readers,ou=groups,dc=example,dc=org
+    attributes:
+      cn: [application.readers]
+    sharedAttributes:
+      objectClass: [groupOfNames]
+      member:
+        - uid=group-sentinel,ou=services,dc=example,dc=org

@@ -9,6 +9,5 @@ spec:
   cn: application
   baseDN: ou=services,dc=example,dc=org
   backendRef:
-    kind: ProviderConfig
     name: directory
   deletionPolicy: Orphan

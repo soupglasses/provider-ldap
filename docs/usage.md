@@ -9,6 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 When available, the controller records the LDAP entryUUID after adoption in
 `crossplane.io/external-name` and follows that identity across renames and moves.
 Changing the DN uses LDAP ModifyDN; it does not adopt an unrelated destination.
+For a raw Entry named by `cn`, update `forProvider.dn` and `attributes.cn`
+together. Updating a non-naming `cn` (for example, under `uid=...`) is an ordinary
+attribute change and does not rename the entry.
 Observe-only policies never rename an entry. Delete follows the bound identity,
 including when a requested destination is occupied by another entry. Directories
 without readable entryUUID support fixed-DN CRUD only. UUID-protected writes and

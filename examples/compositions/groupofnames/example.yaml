@@ -9,7 +9,6 @@ spec:
   cn: application.readers
   baseDN: ou=groups,dc=example,dc=org
   backendRef:
-    kind: ProviderConfig
     name: directory
   deletionPolicy: Orphan
   sentinelDN: uid=group-sentinel,ou=services,dc=example,dc=org
