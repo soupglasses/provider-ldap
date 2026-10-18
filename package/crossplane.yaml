@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: MIT
+
+apiVersion: meta.pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-ldap
+  annotations:
+    meta.crossplane.io/maintainer: Sofie Finnes <sofie+git@finnes.dev>
+    meta.crossplane.io/source: https://github.com/soupglasses/provider-ldap
+    meta.crossplane.io/license: MIT
+    meta.crossplane.io/description: Declarative LDAP entry reconciliation for Crossplane
+spec:
+  crossplane:
+    version: ">=v2.4.0-0"
+  controller:
+    permissionRequests:
+      - apiGroups: [""]
+        resources: [namespaces]
+        verbs: [get]

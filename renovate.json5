@@ -1,0 +1,73 @@
+// SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+// SPDX-License-Identifier: MIT
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "groupName": "Go dependencies"
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Dockerfile$/"
+      ],
+      "matchStrings": [
+        "go install (?<depName>[^@\\s]+?)(?:/cmd/[^@\\s]+)?@(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "go"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^kind-test\\.sh$/"
+      ],
+      "matchStrings": [
+        "(?<depName>kindest/node|registry):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^kind-test\\.sh$/"
+      ],
+      "matchStrings": [
+        "--version (?<currentValue>[0-9.]+) --namespace crossplane-system"
+      ],
+      "datasourceTemplate": "helm",
+      "depNameTemplate": "crossplane",
+      "registryUrlTemplate": "https://charts.crossplane.io/stable"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/provider\\.yaml$/"
+      ],
+      "matchStrings": [
+        "version: (?<currentValue>[0-9]{4}\\.[0-9]+\\.[0-9]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "jdx/mise",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: MIT
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: applications
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: directory-credentials
+  namespace: applications
+type: Opaque
+stringData:
+  password: replace-with-directory-bind-password
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: service-attributes
+  namespace: applications
+type: Opaque
+stringData:
+  attributes.json: |
+    {"objectClass":["inetOrgPerson"],"cn":["Service"],"sn":["Account"],"userPassword":["replace-with-service-password"]}
+---
+apiVersion: ldap.ops.finnes.dev/v1beta1
+kind: ProviderConfig
+metadata:
+  name: directory
+  namespace: applications
+spec:
+  host: ldap.example.org
+  port: 636
+  bindDN: cn=service-admin,dc=example,dc=org
+  tls: true
+  credentialsSecretRef:
+    name: directory-credentials
+    key: password
+---
+apiVersion: ldap.ops.finnes.dev/v1alpha1
+kind: Entry
+metadata:
+  name: service
+  namespace: applications
+  annotations:
+    crossplane.io/external-name: uid=service,ou=services,dc=example,dc=org
+spec:
+  managementPolicies: [Observe, Create, Update]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: directory
+  forProvider:
+    dataJsonSecretRef:
+      name: service-attributes
+      key: attributes.json
+    restrictAttributes: [objectClass, cn, sn, userPassword]

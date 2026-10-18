@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: MIT
+
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: ldap
+spec:
+  package: ghcr.io/soupglasses/provider-ldap:v0.1.0
+  revisionHistoryLimit: 2
+  runtimeConfigRef:
+    name: ldap
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: ldap
+spec:
+  serviceAccountTemplate:
+    metadata:
+      name: ldap-provider
+  deploymentTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ldap-provider
+    spec:
+      selector: {}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ldap-provider
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              readinessProbe:
+                httpGet:
+                  path: /readyz
+                  port: 8081
+              livenessProbe:
+                httpGet:
+                  path: /healthz
+                  port: 8081
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                capabilities:
+                  drop: [ALL]

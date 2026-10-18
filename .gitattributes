@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: MIT
+
+package/crds/** linguist-generated=true
+config/schema.json linguist-generated=true

@@ -1,0 +1,197 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: clusterproviderconfigs.ldap.ops.finnes.dev
+spec:
+  group: ldap.ops.finnes.dev
+  names:
+    kind: ClusterProviderConfig
+    listKind: ClusterProviderConfigList
+    plural: clusterproviderconfigs
+    singular: clusterproviderconfig
+  scope: Cluster
+  versions:
+    - name: v1beta1
+      schema:
+        openAPIV3Schema:
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              properties:
+                allowedBases:
+                  description: Entries must be direct children of one of these DNs and use a namespace-prefixed RDN.
+                  items:
+                    minLength: 1
+                    type: string
+                  minItems: 1
+                  type: array
+                bindDN:
+                  minLength: 1
+                  type: string
+                credentialsSecretRef:
+                  properties:
+                    key:
+                      minLength: 1
+                      type: string
+                    name:
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: Namespace is required for cluster configurations and local for namespaced configurations.
+                      minLength: 1
+                      type: string
+                  required:
+                    - key
+                    - name
+                  type: object
+                host:
+                  minLength: 1
+                  type: string
+                namespaceSelector:
+                  description: |-
+                    NamespaceSelector authorizes namespaces to use these shared credentials.
+                    An empty selector is forbidden to prevent accidentally granting cluster-wide access.
+                  properties:
+                    matchExpressions:
+                      description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                      items:
+                        description: |-
+                          A label selector requirement is a selector that contains values, a key, and an operator that
+                          relates the key and values.
+                        properties:
+                          key:
+                            description: key is the label key that the selector applies to.
+                            type: string
+                          operator:
+                            description: |-
+                              operator represents a key's relationship to a set of values.
+                              Valid operators are In, NotIn, Exists and DoesNotExist.
+                            type: string
+                          values:
+                            description: |-
+                              values is an array of string values. If the operator is In or NotIn,
+                              the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                              the values array must be empty. This array is replaced during a strategic
+                              merge patch.
+                            items:
+                              type: string
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        required:
+                          - key
+                          - operator
+                        type: object
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    matchLabels:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                        map is equivalent to an element of matchExpressions, whose key field is "key", the
+                        operator is "In", and the values array contains only "value". The requirements are ANDed.
+                      type: object
+                  type: object
+                  x-kubernetes-map-type: atomic
+                  x-kubernetes-validations:
+                    - message: namespaceSelector must contain at least one label requirement
+                      rule: (has(self.matchLabels) && size(self.matchLabels) > 0) || (has(self.matchExpressions) && size(self.matchExpressions) > 0)
+                port:
+                  maximum: 65535
+                  minimum: 1
+                  type: integer
+                tls:
+                  default: true
+                  type: boolean
+                tlsServerName:
+                  description: TLSServerName selects the certificate name when it differs from the connection host.
+                  type: string
+              required:
+                - allowedBases
+                - bindDN
+                - credentialsSecretRef
+                - host
+                - namespaceSelector
+                - port
+                - tls
+              type: object
+              x-kubernetes-validations:
+                - message: shared credentials require TLS and an explicit secret namespace
+                  rule: self.tls && has(self.credentialsSecretRef.namespace) && size(self.credentialsSecretRef.namespace) > 0
+            status:
+              description: A ProviderConfigStatus defines the observed status of a ProviderConfig.
+              properties:
+                conditions:
+                  description: Conditions of the resource.
+                  items:
+                    description: A Condition that may apply to a resource.
+                    properties:
+                      lastTransitionTime:
+                        description: |-
+                          LastTransitionTime is the last time this condition transitioned from one
+                          status to another.
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          A Message containing details about this condition's last transition from
+                          one status to another, if any.
+                        type: string
+                      observedGeneration:
+                        description: |-
+                          ObservedGeneration represents the .metadata.generation that the condition was set based upon.
+                          For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                          with respect to the current state of the instance.
+                        format: int64
+                        type: integer
+                      reason:
+                        description: A Reason for this condition's last transition from one status to another.
+                        type: string
+                      status:
+                        description: Status of this condition; is it currently True, False, or Unknown?
+                        type: string
+                      type:
+                        description: |-
+                          Type of this condition. At most one of each condition type may apply to
+                          a resource at any point in time.
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
+                users:
+                  description: Users of this provider configuration.
+                  format: int64
+                  type: integer
+              type: object
+          required:
+            - spec
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}

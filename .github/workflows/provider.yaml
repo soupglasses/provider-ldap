@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: MIT
+name: Provider
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: provider-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  provider:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          version: 2026.10.11
+      - name: Build native package and LDAP fixtures
+        run: |
+          bash build.sh /tmp/provider-ldap.xpkg
+          docker build --target tests --tag provider-ldap-tests:development .
+      - name: Verify generated schemas are reproducible
+        run: |
+          docker build --target generated --output type=local,dest=/tmp/ldap-generated .
+          diff -r package/crds /tmp/ldap-generated/generated/crds
+          diff config/schema.json /tmp/ldap-generated/generated/schema.json
+      - name: Verify real LDAP reconciliation and lifecycle
+        env:
+          PROVIDER_PACKAGE: /tmp/provider-ldap.xpkg
+        run: bash kind-test.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: provider-package
+          path: /tmp/provider-ldap.xpkg
+          if-no-files-found: error
+  publish:
+    needs: provider
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref,
+      'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    steps:
+      - name: Download verified native package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name provider-package --dir
+          /tmp/release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          version: 2026.10.11
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          numeric = r"(?:0|[1-9][0-9]*)"
+          identifier = rf"(?:{numeric}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+          version = rf"v{numeric}\.{numeric}\.{numeric}(?:-{identifier}(?:\.{identifier})*)?"
+          if re.fullmatch(version, os.environ["GITHUB_REF_NAME"]) is None:
+              raise SystemExit("Release tags must be OCI-compatible semantic versions, such as v1.2.3 or v1.2.3-rc.1")
+          PYTHON
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Reject an existing release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; publish a new version." >&2
+            exit 1
+          fi
+      - name: Publish native Provider package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          version="v0.1.0-${GITHUB_SHA}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="$GITHUB_REF_NAME"
+          fi
+          crossplane xpkg push --package-files /tmp/release/provider-ldap.xpkg --oci-annotation org.opencontainers.image.revision="$GITHUB_SHA" --oci-annotation org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" "ghcr.io/soupglasses/provider-ldap:$version"
+          anonymous_config=$(mktemp -d)
+          trap 'rm -rf "$anonymous_config"' EXIT
+          if ! docker --config "$anonymous_config" manifest inspect "ghcr.io/soupglasses/provider-ldap:$version" >/dev/null; then
+            echo 'Published package is not anonymously installable; check its GHCR visibility.' >&2
+            exit 1
+          fi
+      - name: Publish release artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: /tmp/release
+        run: |
+          sha256sum provider-ldap.xpkg > SHA256SUMS
+          release_args=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_args+=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" provider-ldap.xpkg SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${release_args[@]}"
