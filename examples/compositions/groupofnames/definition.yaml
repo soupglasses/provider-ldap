@@ -31,15 +31,9 @@ spec:
                 cn:
                   type: string
                   pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
-                  x-kubernetes-validations:
-                    - rule: self == oldSelf
-                      message: cn is immutable
                 baseDN:
                   type: string
                   minLength: 1
-                  x-kubernetes-validations:
-                    - rule: self == oldSelf
-                      message: baseDN is immutable
                 description:
                   type: string
                 deletionPolicy:
@@ -68,14 +62,6 @@ spec:
                 sentinelDN:
                   type: string
                   minLength: 1
-            status:
-              type: object
-              properties:
-                managedSentinelDNs:
-                  type: array
-                  items:
-                    type: string
-                  x-kubernetes-list-type: atomic
 ---
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
@@ -99,27 +85,20 @@ spec:
             {{- $xr := .observed.composite.resource -}}
             {{- $spec := $xr.spec -}}
             {{- $entry := getComposedResource . "entry" -}}
-            {{- $sentinel := $spec.sentinelDN -}}
-            {{- $managed := dig "status" "managedSentinelDNs" (list) $xr -}}
-            {{- $staged := has $sentinel $managed -}}
-            {{- $retired := without $managed $sentinel -}}
-            {{- $attributes := dict "cn" (list $spec.cn) -}}
+            {{- $attributes := dict "cn" (list $spec.cn) "objectClass" (list "groupOfNames") "member" (list $spec.sentinelDN) -}}
             {{- if hasKey $spec "description" -}}
               {{- $_ := set $attributes "description" (ternary (list $spec.description) (list) (ne $spec.description "")) -}}
             {{- end -}}
-            {{- $parameters := dict "dn" (printf "cn=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "additiveAttributes" (dict "objectClass" (list "groupOfNames") "member" (list $sentinel)) "absentAttributes" (dict "member" $retired) -}}
+            {{- $parameters := dict "dn" (printf "cn=%s,%s" $spec.cn $spec.baseDN) "attributes" $attributes "attributeOwnership" (dict "objectClass" "Subset" "member" "Subset") -}}
             {{- $generationMatches := and $entry (eq (toString (dig "status" "atProvider" "observedGeneration" 0 $entry)) (toString $entry.metadata.generation)) -}}
-            {{- $ready := not (empty (and $staged $entry $generationMatches (deepEqual $entry.spec.forProvider $parameters) (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True"))) -}}
-            {{/* Persist intent before changing LDAP; retain every pending sentinel across interrupted transitions. */}}
+            {{- $ready := not (empty (and $entry $generationMatches (deepEqual $entry.spec.forProvider $parameters) (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True"))) -}}
             ---
             apiVersion: {{ $xr.apiVersion }}
             kind: {{ $xr.kind }}
             metadata:
               annotations:
                 gotemplating.fn.crossplane.io/ready: {{ $ready | ternary "True" "False" | quote }}
-            status:
-              managedSentinelDNs: {{ if $ready }}{{ list $sentinel | toJson }}{{ else if $staged }}{{ $managed | toJson }}{{ else }}{{ append $managed $sentinel | toJson }}{{ end }}
-            {{- if or $staged $entry }}
+            status: {}
             ---
             apiVersion: ldap.finnes.dev/v1alpha1
             kind: Entry
@@ -129,11 +108,6 @@ spec:
                 {{ setResourceNameAnnotation "entry" }}
                 gotemplating.fn.crossplane.io/ready: {{ $ready | ternary "True" "False" | quote }}
             spec:
-              {{- if not $staged }}
-              {{- $entry.spec | toYaml | nindent 2 }}
-              {{- else }}
               managementPolicies: {{ if eq ($spec.deletionPolicy | default "Delete") "Delete" }}[Observe, Create, Update, Delete]{{ else }}[Observe, Create, Update]{{ end }}
               providerConfigRef: {{ $spec.backendRef | toJson }}
               forProvider: {{ $parameters | toJson }}
-              {{- end }}
-            {{- end }}

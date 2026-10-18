@@ -38,7 +38,7 @@ func TestLDAPState(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := func() error {
-		result, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 5, false, "(objectClass=*)", []string{"*"}, nil))
+		result, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 5, false, "(objectClass=*)", []string{"*", "entryUUID"}, nil))
 		if os.Getenv("LDAP_EXPECT_ABSENT") == "true" {
 			if ldap.IsErrorWithCode(err, ldap.LDAPResultNoSuchObject) {
 				return nil
@@ -50,6 +50,9 @@ func TestLDAPState(t *testing.T) {
 		}
 		if len(result.Entries) != 1 {
 			return fmt.Errorf("expected one LDAP entry, got %d", len(result.Entries))
+		}
+		if uuid, configured := os.LookupEnv("LDAP_EXPECT_UUID"); configured && (uuid == "" || result.Entries[0].GetEqualFoldAttributeValue("entryUUID") != uuid) {
+			return fmt.Errorf("LDAP identity UUID changed")
 		}
 		for attribute, expected := range want {
 			got := slices.Clone(result.Entries[0].GetAttributeValues(attribute))
@@ -90,6 +93,10 @@ func TestLDAPBind(t *testing.T) {
 	if password == "" {
 		t.Skip("requires generated fixture credentials")
 	}
+	dn := os.Getenv("LDAP_BIND_DN")
+	if dn == "" {
+		dn = "uid=generated,ou=users,dc=example,dc=test"
+	}
 	var last error
 	err := wait.PollUntilContextTimeout(context.Background(), 250*time.Millisecond, 45*time.Second, true, func(context.Context) (bool, error) {
 		conn, err := ldap.DialURL("ldap://127.0.0.1:1389")
@@ -98,7 +105,7 @@ func TestLDAPBind(t *testing.T) {
 			return false, nil
 		}
 		defer conn.Close()
-		last = conn.Bind("uid=generated,ou=users,dc=example,dc=test", password)
+		last = conn.Bind(dn, password)
 		return last == nil, nil
 	})
 	if err != nil {
@@ -112,7 +119,7 @@ func TestLDAPBind(t *testing.T) {
 	if err := conn.Bind("cn=admin,dc=example,dc=test", "disposable-fixture-password"); err != nil {
 		t.Fatal(err)
 	}
-	result, err := conn.Search(ldap.NewSearchRequest("uid=generated,ou=users,dc=example,dc=test", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 5, false, "(objectClass=*)", []string{"userPassword"}, nil))
+	result, err := conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 5, false, "(objectClass=*)", []string{"userPassword"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

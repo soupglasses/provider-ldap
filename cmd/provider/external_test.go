@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	"github.com/go-ldap/ldap/v3"
@@ -22,6 +23,7 @@ type fixtureLDAP struct {
 	created      *ldap.AddRequest
 	beforeModify func()
 	compareErr   error
+	compareFn    func(string, string, string) (bool, error)
 	searchFn     func(*ldap.SearchRequest) (*ldap.SearchResult, error)
 }
 
@@ -38,7 +40,10 @@ func (f *fixtureLDAP) Search(request *ldap.SearchRequest) (*ldap.SearchResult, e
 	}
 	return &ldap.SearchResult{Entries: []*ldap.Entry{copy}}, nil
 }
-func (f *fixtureLDAP) Compare(_ string, key, value string) (bool, error) {
+func (f *fixtureLDAP) Compare(dn string, key, value string) (bool, error) {
+	if f.compareFn != nil {
+		return f.compareFn(dn, key, value)
+	}
 	if f.compareErr != nil {
 		return false, f.compareErr
 	}
@@ -97,8 +102,9 @@ func (f *fixtureLDAP) Modify(request *ldap.ModifyRequest) error {
 	f.entry = next
 	return nil
 }
-func (f *fixtureLDAP) Del(*ldap.DelRequest) error { f.entry = nil; return nil }
-func (f *fixtureLDAP) Close() error               { return nil }
+func (f *fixtureLDAP) ModifyDN(*ldap.ModifyDNRequest) error { return nil }
+func (f *fixtureLDAP) Del(*ldap.DelRequest) error           { f.entry = nil; return nil }
+func (f *fixtureLDAP) Close() error                         { return nil }
 func TestAtomicAddPreservesConcurrentMembership(t *testing.T) {
 	dn := "cn=group,dc=example"
 	conn := &fixtureLDAP{entry: ldap.NewEntry(dn, map[string][]string{"member": {"uid=existing,dc=example"}, "description": {"old"}, "owner": {"uid=owner,dc=example"}})}
@@ -223,5 +229,28 @@ func TestLDAPAttributeDescriptions(t *testing.T) {
 		if err := validateParameters(p); err == nil {
 			t.Fatalf("invalid LDAP attribute %q accepted", name)
 		}
+	}
+}
+
+func TestHealthyObservePreservesReadyTransitionTime(t *testing.T) {
+	entry := testEntry("ProviderConfig", "fixture")
+	ready := xpv2.Available()
+	ready.LastTransitionTime = metav1.NewTime(time.Unix(100, 0))
+	entry.SetConditions(ready)
+	conn := &fixtureLDAP{entry: ldap.NewEntry(entry.Spec.ForProvider.DN, map[string][]string{"cn": {"service"}})}
+	external := &ldapExternal{conn: conn, desired: map[string][]string{"cn": {"service"}}}
+	for i := 0; i < 2; i++ {
+		observed, err := external.Observe(context.Background(), entry)
+		if err != nil || !observed.ResourceUpToDate {
+			t.Fatalf("healthy observation failed: %v", err)
+		}
+		if got := entry.GetCondition(ready.Type); !got.LastTransitionTime.Equal(&ready.LastTransitionTime) {
+			t.Fatalf("healthy poll changed Ready transition time: %v", got.LastTransitionTime)
+		}
+	}
+	conn.entry = ldap.NewEntry(entry.Spec.ForProvider.DN, map[string][]string{"cn": {"drift"}})
+	observed, err := external.Observe(context.Background(), entry)
+	if err != nil || observed.ResourceUpToDate || entry.GetCondition(ready.Type).Status != corev1.ConditionFalse {
+		t.Fatalf("known drift retained Ready=True: %v", err)
 	}
 }

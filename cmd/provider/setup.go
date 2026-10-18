@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"net"
 	"strconv"
 	"strings"
@@ -131,6 +132,17 @@ func providerSettings(ctx context.Context, k client.Client, entry *entryapi.Entr
 		}
 		if err := validateEntryDN(entry.Spec.ForProvider.DN, entry.Namespace, pc.Spec.AllowedBases); err != nil {
 			return creds, false, err
+		}
+		for _, source := range []string{meta.GetExternalName(entry), entry.Status.AtProvider.DN} {
+			if source == "" {
+				continue
+			}
+			if _, err := identityUUID(source); err == nil {
+				continue
+			}
+			if err := validateEntryDN(source, entry.Namespace, pc.Spec.AllowedBases); err != nil {
+				return creds, false, err
+			}
 		}
 		creds = pc.Spec.Credentials
 		if creds.SecretRef == nil || creds.SecretRef.Namespace == "" {

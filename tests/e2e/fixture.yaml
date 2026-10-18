@@ -20,7 +20,7 @@ data:
     rootpw disposable-fixture-password
     directory /tmp/database
     access to attrs=userPassword by self write by anonymous auth by dn.exact="cn=admin,dc=example,dc=test" manage by * none
-    access to * by dn.exact="cn=admin,dc=example,dc=test" manage by * none
+    access to * by dn.exact="cn=admin,dc=example,dc=test" manage by dn.exact="uid=read-only,ou=users,dc=example,dc=test" read by * none
   base.ldif: |
     dn: dc=example,dc=test
     objectClass: domain
@@ -33,6 +33,17 @@ data:
     dn: ou=groups,dc=example,dc=test
     objectClass: organizationalUnit
     ou: groups
+
+    dn: ou=groups-moved,dc=example,dc=test
+    objectClass: organizationalUnit
+    ou: groups-moved
+
+    dn: uid=read-only,ou=users,dc=example,dc=test
+    objectClass: inetOrgPerson
+    uid: read-only
+    cn: Read Only Fixture
+    sn: Fixture
+    userPassword: disposable-read-only-password
   drift.ldif: |
     dn: uid=service,ou=users,dc=example,dc=test
     changetype: modify

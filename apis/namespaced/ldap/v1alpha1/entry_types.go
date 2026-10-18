@@ -12,17 +12,31 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
+// AttributeOwnershipPolicy controls whether an attribute owns its complete set or only declared values.
+// +kubebuilder:validation:Enum=Exact;Subset
+type AttributeOwnershipPolicy string
+
+const (
+	AttributeOwnershipExact  AttributeOwnershipPolicy = "Exact"
+	AttributeOwnershipSubset AttributeOwnershipPolicy = "Subset"
+)
+
 // EntryParameters declares attribute ownership. LDAP attribute names are case insensitive.
 type EntryParameters struct {
-	// DN identifies the entry, including when adopting existing directory data.
+	// DN is the desired distinguished name. Changes rename the same LDAP entry.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=8192
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="dn is immutable"
 	DN string `json:"dn"`
-	// Attributes owns exactly the values of declared keys. Empty lists clear an attribute; omitted keys are preserved.
+	// Attributes declares desired values. Exact ownership is the default.
+	// Subset ownership preserves unmanaged values and removes previously claimed values when omitted.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
 	Attributes map[string][]string `json:"attributes,omitempty"`
+	// AttributeOwnership selects Exact (default) or Subset for keys in Attributes.
+	// Secret references always use Exact ownership.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=128
+	AttributeOwnership map[string]AttributeOwnershipPolicy `json:"attributeOwnership,omitempty"`
 	// AttributeSecretRefs owns a single value from a local Secret for each declared attribute.
 	// Secret values are never copied to status or connection details.
 	// +optional
@@ -52,6 +66,12 @@ type EntrySpec struct {
 	ForProvider              EntryParameters `json:"forProvider"`
 }
 type EntryStatus struct {
+	// OwnedAttributeValues is a bounded durable intent ledger for inline Subset values.
+	// It is persisted before directory writes and compacted only after verified observation.
+	// Secret values are never recorded here.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=256
+	OwnedAttributeValues       map[string][]string `json:"ownedAttributeValues,omitempty"`
 	xpv2.ManagedResourceStatus `json:",inline"`
 	AtProvider                 EntryObservation `json:"atProvider,omitempty"`
 }

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"strings"
@@ -55,7 +56,7 @@ func TestEntryOwnership(t *testing.T) {
 }
 
 func testEntry(kind, name string) *entryapi.Entry {
-	return &entryapi.Entry{ObjectMeta: metav1.ObjectMeta{Namespace: "media"}, Spec: entryapi.EntrySpec{ManagedResourceSpec: xpv2.ManagedResourceSpec{ProviderConfigReference: &xpv2.ProviderConfigReference{Kind: kind, Name: name}}, ForProvider: entryapi.EntryParameters{DN: "uid=media.service,ou=system,dc=example,dc=test"}}}
+	return &entryapi.Entry{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Annotations: map[string]string{"crossplane.io/external-name": "uid=media.service,ou=system,dc=example,dc=test"}}, Spec: entryapi.EntrySpec{ManagedResourceSpec: xpv2.ManagedResourceSpec{ProviderConfigReference: &xpv2.ProviderConfigReference{Kind: kind, Name: name}}, ForProvider: entryapi.EntryParameters{DN: "uid=media.service,ou=system,dc=example,dc=test"}}}
 }
 func credentials(namespace string) configapi.ProviderCredentials {
 	return configapi.ProviderCredentials{Source: xpv2.CredentialsSourceSecret, CommonCredentialSelectors: xpv2.CommonCredentialSelectors{SecretRef: &xpv2.SecretKeySelector{SecretReference: xpv2.SecretReference{Namespace: namespace, Name: "credentials"}, Key: "connection.yaml"}}}
@@ -182,5 +183,27 @@ func TestTrackedSharedReferenceDoesNotBypassAuthorization(t *testing.T) {
 	entry.SetGroupVersionKind(entryapi.CRDGroupVersion.WithKind("Entry"))
 	if _, err := connector.Connect(ctx, entry); err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Fatalf("shared reference bypassed namespace authorization: %v", err)
+	}
+}
+
+func TestSharedSourceAuthorizationPrecedesCredentialReads(t *testing.T) {
+	for _, field := range []string{"external-name", "observed DN"} {
+		t.Run(field, func(t *testing.T) {
+			pc := &configapi.ClusterProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: configapi.ClusterProviderConfigSpec{ProviderConfigSpec: configapi.ProviderConfigSpec{Credentials: credentials("platform")}, NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, AllowedBases: []string{"ou=system,dc=example,dc=test"}}}
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media", Labels: map[string]string{"directory": "shared"}}}
+			kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, ns).Build()
+			entry := testEntry("ClusterProviderConfig", "shared")
+			foreign := "uid=other.service,ou=system,dc=example,dc=test"
+			if field == "external-name" {
+				meta.SetExternalName(entry, foreign)
+			} else {
+				meta.SetExternalName(entry, identityA)
+				entry.Status.AtProvider.DN = foreign
+			}
+			_, err := connectionSettings(context.Background(), kube, entry)
+			if err == nil || strings.Contains(err.Error(), "credentials") || strings.Contains(err.Error(), "not found") {
+				t.Fatalf("foreign source did not fail before missing credential lookup: %v", err)
+			}
+		})
 	}
 }

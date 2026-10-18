@@ -59,10 +59,11 @@ spec:
         - Application
       sn:
         - Service
-    additiveAttributes:
       objectClass:
         - inetOrgPerson
     attributeSecretRefs:
       userPassword:
         name: application-password
         key: password
+    attributeOwnership:
+      objectClass: Subset

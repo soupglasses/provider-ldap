@@ -61,6 +61,10 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 			return nil, err
 		}
 	}
+	scope, err := identityScopeFor(ctx, c.kube, entry)
+	if err != nil {
+		return nil, err
+	}
 	conn, err := dialLDAP(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -71,8 +75,12 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 		additive = entry.Spec.ForProvider.AdditiveAttributes
 		absent = entry.Spec.ForProvider.AbsentAttributes
 	}
-	external := &ldapExternal{conn: conn, desired: desired, additive: additive, absent: absent, secretVersions: versions}
+	external := &ldapExternal{conn: conn, desired: desired, additive: additive, absent: absent, secretVersions: versions, kube: c.kube, ownership: entry.Spec.ForProvider.AttributeOwnership, identity: &entryIdentity{kube: c.kube, scope: scope}}
 	external.cancelOnContext(ctx)
+	if _, err := external.refreshIdentity(ctx, entry); err != nil {
+		external.Disconnect(ctx)
+		return nil, err
+	}
 	if entry.GetDeletionTimestamp().IsZero() {
 		if err := external.loadSchema(ctx, entry.Spec.ForProvider.DN); err != nil {
 			external.Disconnect(ctx)
@@ -82,7 +90,7 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 	return external, nil
 }
 
-// The API's immutable DN is authoritative; external-name is only Crossplane's lifecycle identifier.
+// Set the initial adoption anchor once; subsequent reconciles preserve the bound UUID.
 type dnInitializer struct{ kube client.Client }
 
 func (i *dnInitializer) Initialize(ctx context.Context, mg resource.Managed) error {
@@ -93,14 +101,14 @@ func (i *dnInitializer) Initialize(ctx context.Context, mg resource.Managed) err
 	if _, err := parseDN(entry.Spec.ForProvider.DN); err != nil {
 		return err
 	}
-	if meta.GetExternalName(entry) == entry.Spec.ForProvider.DN {
+	if meta.GetExternalName(entry) != "" {
 		return nil
 	}
 	meta.SetExternalName(entry, entry.Spec.ForProvider.DN)
 	return i.kube.Update(ctx, entry)
 }
 
-// LDAP Add/Delete are synchronous, and the immutable DN makes creation outcomes safely observable.
+// Add targets are durably recorded before creation, so a lost reply is observable by DN. UUIDs protect subsequent mutations.
 func newEntryReconciler(mgr ctrl.Manager, o controller.Options, extra ...managed.ReconcilerOption) *managed.Reconciler {
 	kind := entryapi.CRDGroupVersion.WithKind("Entry")
 	name := managed.ControllerName(kind.String())

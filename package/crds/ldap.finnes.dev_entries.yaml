@@ -71,6 +71,18 @@ spec:
                       description: AdditiveAttributes ensures values are present with atomic LDAP Add operations, preserving all other values.
                       maxProperties: 128
                       type: object
+                    attributeOwnership:
+                      additionalProperties:
+                        description: AttributeOwnershipPolicy controls whether an attribute owns its complete set or only declared values.
+                        enum:
+                          - Exact
+                          - Subset
+                        type: string
+                      description: |-
+                        AttributeOwnership selects Exact (default) or Subset for keys in Attributes.
+                        Secret references always use Exact ownership.
+                      maxProperties: 128
+                      type: object
                     attributeSecretRefs:
                       additionalProperties:
                         description: |-
@@ -96,17 +108,16 @@ spec:
                         items:
                           type: string
                         type: array
-                      description: Attributes owns exactly the values of declared keys. Empty lists clear an attribute; omitted keys are preserved.
+                      description: |-
+                        Attributes declares desired values. Exact ownership is the default.
+                        Subset ownership preserves unmanaged values and removes previously claimed values when omitted.
                       maxProperties: 128
                       type: object
                     dn:
-                      description: DN identifies the entry, including when adopting existing directory data.
+                      description: DN is the desired distinguished name. Changes rename the same LDAP entry.
                       maxLength: 8192
                       minLength: 1
                       type: string
-                      x-kubernetes-validations:
-                        - message: dn is immutable
-                          rule: self == oldSelf
                   required:
                     - dn
                   type: object
@@ -244,6 +255,17 @@ spec:
                     it can not recover from without human intervention.
                   format: int64
                   type: integer
+                ownedAttributeValues:
+                  additionalProperties:
+                    items:
+                      type: string
+                    type: array
+                  description: |-
+                    OwnedAttributeValues is a bounded durable intent ledger for inline Subset values.
+                    It is persisted before directory writes and compacted only after verified observation.
+                    Secret values are never recorded here.
+                  maxProperties: 256
+                  type: object
               type: object
           required:
             - spec

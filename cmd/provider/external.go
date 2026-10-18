@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -90,10 +91,25 @@ func validateParameters(p entryapi.EntryParameters) error {
 			}
 		}
 	}
+	for key, mode := range p.AttributeOwnership {
+		if len(key) > 128 || !attributeName.MatchString(key) {
+			return fmt.Errorf("invalid LDAP ownership attribute name")
+		}
+		if mode != entryapi.AttributeOwnershipExact && mode != entryapi.AttributeOwnershipSubset {
+			return fmt.Errorf("unknown attribute ownership policy")
+		}
+		if mode == entryapi.AttributeOwnershipSubset {
+			for secretKey := range p.AttributeSecretRefs {
+				if canonicalAttributeName(secretKey) == canonicalAttributeName(key) {
+					return fmt.Errorf("Secret references cannot use Subset ownership")
+				}
+			}
+		}
+	}
 	// A replace-owned RDN attribute must include its naming value to avoid illegal renames.
 	for _, rdn := range dn.RDNs[0].Attributes {
 		for key, values := range p.Attributes {
-			if strings.EqualFold(key, rdn.Type) && !contains(values, rdn.Value) {
+			if strings.EqualFold(key, rdn.Type) && len(p.AttributeOwnership) == 0 && !contains(values, rdn.Value) {
 				return fmt.Errorf("attribute %s must include the DN naming value", key)
 			}
 		}
@@ -142,10 +158,16 @@ type ldapConnection interface {
 	Compare(string, string, string) (bool, error)
 	Add(*ldap.AddRequest) error
 	Modify(*ldap.ModifyRequest) error
+	ModifyDN(*ldap.ModifyDNRequest) error
 	Del(*ldap.DelRequest) error
 	Close() error
 }
 type ldapExternal struct {
+	kube      client.Client
+	ownership map[string]entryapi.AttributeOwnershipPolicy
+	identity  *entryIdentity
+	ledger    map[string][]string
+
 	conn           ldapConnection
 	desired        map[string][]string
 	additive       map[string][]string
@@ -184,6 +206,9 @@ func (e *ldapExternal) read(ctx context.Context, dn string) (*ldap.Entry, error)
 	for key := range e.absent {
 		selected[key] = nil
 	}
+	for key := range e.ledger {
+		selected[key] = nil
+	}
 	result, err := e.conn.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", keys(selected), nil))
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
@@ -198,6 +223,9 @@ func (e *ldapExternal) read(ctx context.Context, dn string) (*ldap.Entry, error)
 		return nil, fmt.Errorf("LDAP base search did not return exactly one entry")
 	}
 	entry := result.Entries[0]
+	if err := e.verifyIdentity(entry); err != nil {
+		return nil, err
+	}
 	for _, attribute := range entry.Attributes {
 		if canonical, err := e.schema.key(attribute.Name); err == nil {
 			attribute.Name = canonical
@@ -252,12 +280,12 @@ func (e *ldapExternal) hasValue(ctx context.Context, observed *ldap.Entry, key, 
 	}
 	return same, nil
 }
-func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry) (bool, error) {
+func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry, entry *entryapi.Entry) (bool, error) {
 	if err := e.validateValuePolicies(ctx, observed.DN); err != nil {
 		return false, err
 	}
 	for key, want := range e.desired {
-		if len(attributeValues(observed, key)) != len(want) {
+		if !e.isSubset(key) && len(attributeValues(observed, key)) != len(want) {
 			return false, nil
 		}
 		for _, value := range want {
@@ -292,11 +320,36 @@ func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry) (bool
 			}
 		}
 	}
+	retired, err := e.retiredValues(ctx, observed.DN, entry)
+	if err != nil {
+		return false, err
+	}
+	for _, values := range retired {
+		if len(values) > 0 {
+			return false, nil
+		}
+	}
 	return true, nil
 }
-func (e *ldapExternal) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
+func (e *ldapExternal) Observe(ctx context.Context, mg resource.Managed) (result managed.ExternalObservation, observeErr error) {
 	entry := mg.(*entryapi.Entry)
-	observed, err := e.read(ctx, entry.Spec.ForProvider.DN)
+	defer func() {
+		if entry.GetDeletionTimestamp().IsZero() && (observeErr != nil || !result.ResourceExists || !result.ResourceUpToDate) {
+			entry.SetConditions(xpv2.Unavailable())
+		}
+	}()
+	exists, err := e.refreshIdentity(ctx, entry)
+	if err != nil {
+		return managed.ExternalObservation{}, err
+	}
+	if !exists {
+		return managed.ExternalObservation{ResourceExists: false}, nil
+	}
+	if err := e.prepareOwnership(ctx, entry, false); err != nil {
+		return managed.ExternalObservation{}, err
+	}
+	e.ledger = entry.Status.OwnedAttributeValues
+	observed, err := e.read(ctx, e.actualDN(entry))
 	if err != nil {
 		return managed.ExternalObservation{}, err
 	}
@@ -315,9 +368,13 @@ func (e *ldapExternal) Observe(ctx context.Context, mg resource.Managed) (manage
 	if !entry.GetDeletionTimestamp().IsZero() {
 		return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
 	}
-	entry.SetConditions(xpv2.Available())
-	current, err := e.upToDate(ctx, observed)
+	current, err := e.upToDate(ctx, observed, entry)
+	if err == nil && e.needsRename(entry) {
+		current = false
+	}
 	if err == nil && current {
+		entry.SetConditions(xpv2.Available())
+		e.compactOwnership(entry)
 		entry.Status.AtProvider.ObservedGeneration = entry.Generation
 		entry.Status.AtProvider.ObservedSecretVersions = e.secretVersions
 	}
@@ -328,6 +385,12 @@ func (e *ldapExternal) Create(ctx context.Context, mg resource.Managed) (managed
 		return managed.ExternalCreation{}, err
 	}
 	entry := mg.(*entryapi.Entry)
+	if err := e.prepareOwnership(ctx, entry, true); err != nil {
+		return managed.ExternalCreation{}, err
+	}
+	if err := e.prepareCreate(ctx, entry); err != nil {
+		return managed.ExternalCreation{}, err
+	}
 	attrs := map[string][]string{}
 	for _, source := range []map[string][]string{e.desired, e.additive} {
 		for key, values := range source {
@@ -362,16 +425,29 @@ func (e *ldapExternal) Create(ctx context.Context, mg resource.Managed) (managed
 	if err := ctx.Err(); err != nil {
 		return managed.ExternalCreation{}, err
 	}
-	if err := e.conn.Add(request); err != nil && !ldap.IsErrorWithCode(err, ldap.LDAPResultEntryAlreadyExists) {
+	if err := e.conn.Add(request); err != nil {
+		var rejected *ldap.Error
+		if errors.As(err, &rejected) && rejected.ResultCode < 200 {
+			if restoreErr := e.abortCreate(ctx, entry); restoreErr != nil {
+				return managed.ExternalCreation{}, restoreErr
+			}
+		}
 		return managed.ExternalCreation{}, e.operationError(ctx, "create", err)
+	}
+	if err := e.bindCreated(ctx, entry); err != nil {
+		return managed.ExternalCreation{}, err
 	}
 	return managed.ExternalCreation{}, nil
 }
-func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap.Entry) (*ldap.ModifyRequest, error) {
+func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap.Entry, entry *entryapi.Entry) (*ldap.ModifyRequest, error) {
 	if err := e.validateValuePolicies(ctx, dn); err != nil {
 		return nil, err
 	}
-	request := ldap.NewModifyRequest(dn, nil)
+	controls, err := e.assertionControls()
+	if err != nil {
+		return nil, err
+	}
+	request := ldap.NewModifyRequest(dn, controls)
 	// Every operation is one atomic LDAP Modify, so auxiliary classes and their
 	// required attributes become valid together. Add never replaces foreign values.
 	for _, key := range keys(e.additive) {
@@ -387,6 +463,18 @@ func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap
 	}
 	for _, key := range keys(e.desired) {
 		want := e.desired[key]
+		if e.isSubset(key) {
+			for _, value := range want {
+				present, err := e.hasValue(ctx, observed, key, value)
+				if err != nil {
+					return nil, err
+				}
+				if !present {
+					request.Add(key, []string{value})
+				}
+			}
+			continue
+		}
 		same := len(attributeValues(observed, key)) == len(want)
 		if same {
 			for _, value := range want {
@@ -415,19 +503,35 @@ func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap
 			}
 		}
 	}
+	retired, err := e.retiredValues(ctx, dn, entry)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range keys(retired) {
+		for _, value := range retired[key] {
+			request.Delete(key, []string{value})
+		}
+	}
 	return request, nil
 }
 func (e *ldapExternal) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
 	entry := mg.(*entryapi.Entry)
+	if err := e.prepareOwnership(ctx, entry, false); err != nil {
+		return managed.ExternalUpdate{}, err
+	}
+	if err := e.rename(ctx, entry); err != nil {
+		return managed.ExternalUpdate{}, err
+	}
+	e.ledger = entry.Status.OwnedAttributeValues
 	for attempt := 0; attempt < 3; attempt++ {
-		observed, err := e.read(ctx, entry.Spec.ForProvider.DN)
+		observed, err := e.read(ctx, e.actualDN(entry))
 		if err != nil {
 			return managed.ExternalUpdate{}, err
 		}
 		if observed == nil {
 			return managed.ExternalUpdate{}, fmt.Errorf("LDAP entry disappeared before update")
 		}
-		request, err := e.planModify(ctx, entry.Spec.ForProvider.DN, observed)
+		request, err := e.planModify(ctx, e.actualDN(entry), observed, entry)
 		if err != nil {
 			return managed.ExternalUpdate{}, err
 		}
@@ -455,7 +559,11 @@ func (e *ldapExternal) Delete(ctx context.Context, mg resource.Managed) (managed
 		return managed.ExternalDelete{}, err
 	}
 	entry := mg.(*entryapi.Entry)
-	if err := e.conn.Del(ldap.NewDelRequest(entry.Spec.ForProvider.DN, nil)); err != nil && !ldap.IsErrorWithCode(err, ldap.LDAPResultNoSuchObject) {
+	controls, err := e.assertionControls()
+	if err != nil {
+		return managed.ExternalDelete{}, err
+	}
+	if err := e.conn.Del(ldap.NewDelRequest(e.actualDN(entry), controls)); err != nil && !ldap.IsErrorWithCode(err, ldap.LDAPResultNoSuchObject) {
 		return managed.ExternalDelete{}, e.operationError(ctx, "delete", err)
 	}
 	return managed.ExternalDelete{}, nil
