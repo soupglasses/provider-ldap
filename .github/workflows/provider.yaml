@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 name: Provider
 on:
   pull_request:
@@ -32,11 +32,20 @@ jobs:
         run: |
           docker build --target generated --output type=local,dest=/tmp/ldap-generated .
           diff -r package/crds /tmp/ldap-generated/generated/crds
-          diff config/schema.json /tmp/ldap-generated/generated/schema.json
-      - name: Verify real LDAP reconciliation and lifecycle
+          diff -r apis /tmp/ldap-generated/apis
+          docker build --target coverage --output type=local,dest=/tmp/coverage .
+      - name: Verify LDAP lifecycle with Chainsaw
         env:
           PROVIDER_PACKAGE: /tmp/provider-ldap.xpkg
+          CHAINSAW_REPORT_PATH: /tmp/chainsaw-reports
         run: bash kind-test.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-results
+          path: |
+            /tmp/coverage/coverage.out
+            /tmp/chainsaw-reports
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-package
@@ -44,8 +53,7 @@ jobs:
           if-no-files-found: error
   publish:
     needs: provider
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref,
-      'refs/tags/v'))
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -55,8 +63,7 @@ jobs:
       - name: Download verified native package
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name provider-package --dir
-          /tmp/release
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name provider-package --dir /tmp/release
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
@@ -64,6 +71,7 @@ jobs:
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           version: 2026.10.11
+          install_args: aqua:crossplane/cli
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -91,7 +99,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          version="v0.1.0-${GITHUB_SHA}"
+          version="v0.0.0-${GITHUB_SHA}"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version="$GITHUB_REF_NAME"
           fi

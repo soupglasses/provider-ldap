@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: groupofnames.examples.ldap.finnes.dev
+spec:
+  scope: Namespaced
+  group: examples.ldap.finnes.dev
+  names:
+    kind: GroupOfNames
+    plural: groupofnames
+  defaultCompositionRef:
+    name: example-groupofnames
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - cn
+                - baseDN
+                - backendRef
+                - sentinelDN
+              properties:
+                cn:
+                  type: string
+                  pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: cn is immutable
+                baseDN:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: baseDN is immutable
+                description:
+                  type: string
+                deletionPolicy:
+                  type: string
+                  enum:
+                    - Delete
+                    - Orphan
+                  default: Delete
+                backendRef:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                    kind:
+                      type: string
+                      enum:
+                        - ProviderConfig
+                        - ClusterProviderConfig
+                      default: ProviderConfig
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: backendRef is immutable
+                sentinelDN:
+                  type: string
+                  minLength: 1
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: example-groupofnames
+spec:
+  compositeTypeRef:
+    apiVersion: examples.ldap.finnes.dev/v1alpha1
+    kind: GroupOfNames
+  mode: Pipeline
+  pipeline:
+    - step: ldap
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource -}}
+            {{- $spec := $xr.spec -}}
+            {{- $entry := getComposedResource . "entry" -}}
+            {{- $policies := list "Observe" "Create" "Update" -}}
+            {{- if eq ($spec.deletionPolicy | default "Delete") "Delete" }}{{ $policies = append $policies "Delete" }}{{ end -}}
+            ---
+            apiVersion: ldap.finnes.dev/v1alpha1
+            kind: Entry
+            metadata:
+              name: {{ printf "group-%s" $xr.metadata.uid }}
+              namespace: {{ $xr.metadata.namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "entry" }}
+                gotemplating.fn.crossplane.io/ready: {{ and (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True") | ternary "True" "False" | quote }}
+            spec:
+              managementPolicies: {{ $policies | toJson }}
+              providerConfigRef: {{ $spec.backendRef | toJson }}
+              forProvider:
+                dn: {{ printf "cn=%s,%s" $spec.cn $spec.baseDN | quote }}
+                attributes:
+                  cn: [{{ $spec.cn | quote }}]
+                  {{- if hasKey $spec "description" }}
+                  description: {{ if $spec.description }}[{{ $spec.description | quote }}]{{ else }}[]{{ end }}
+                  {{- end }}
+                additiveAttributes:
+                  objectClass: [groupOfNames]
+                  member: [{{ $spec.sentinelDN | quote }}]

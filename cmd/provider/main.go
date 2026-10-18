@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
@@ -10,13 +10,10 @@ import (
 	"time"
 
 	xpcontroller "github.com/crossplane/crossplane-runtime/v2/pkg/controller"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/ratelimiter"
-	tjcontroller "github.com/crossplane/upjet/v2/pkg/controller"
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
 	configapi "github.com/soupglasses/provider-ldap/apis/namespaced/v1beta1"
-	localconfig "github.com/soupglasses/provider-ldap/config"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,9 +37,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	flags := &feature.Flags{}
-	flags.Enable(feature.EnableBetaManagementPolicies)
-	options := tjcontroller.Options{Options: xpcontroller.Options{Logger: logging.NewLogrLogger(logger), GlobalRateLimiter: ratelimiter.NewGlobal(10), PollInterval: interval, MaxConcurrentReconciles: 1, Features: flags}, Provider: localconfig.Namespaced(), OperationTrackerStore: tjcontroller.NewOperationStore(logging.NewLogrLogger(logger))}
+	options := xpcontroller.Options{Logger: logging.NewLogrLogger(logger), GlobalRateLimiter: ratelimiter.NewGlobal(10), PollInterval: interval, MaxConcurrentReconciles: 4}
 	if err = setupEntryController(mgr, options); err != nil {
 		panic(err)
 	}

@@ -1,26 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
-	xpresource "github.com/crossplane/crossplane-runtime/v2/pkg/resource"
-	"github.com/crossplane/upjet/v2/pkg/terraform"
-	"io"
-	"net"
-	"strconv"
-	"sync"
-
-	ber "github.com/go-asn1-ber/asn1-ber"
-	ldapclient "github.com/l-with/terraform-provider-ldap/client"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"strings"
 	"testing"
 
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
 	configapi "github.com/soupglasses/provider-ldap/apis/namespaced/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -64,269 +54,133 @@ func TestEntryOwnership(t *testing.T) {
 	}
 }
 
-func TestClusterProviderAuthorization(t *testing.T) {
-	const backendLabel = "directory.example.test/backend"
-	for _, tc := range []struct {
-		name, label, dn string
-		tls, allowed    bool
-	}{
-		{"opted in", "directory", "uid=media.jellyfin,ou=system,dc=example,dc=test", true, true},
-		{"not opted in", "", "uid=media.jellyfin,ou=system,dc=example,dc=test", true, false},
-		{"different backend", "other", "uid=media.jellyfin,ou=system,dc=example,dc=test", true, false},
-		{"other namespace DN", "directory", "uid=identity.jellyfin,ou=system,dc=example,dc=test", true, false},
-		{"plaintext root bind", "directory", "uid=media.jellyfin,ou=system,dc=example,dc=test", false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			if err := corev1.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			if err := configapi.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			pc := &configapi.ClusterProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "directory"}, Spec: configapi.ClusterProviderConfigSpec{
-				ProviderConfigSpec: configapi.ProviderConfigSpec{TLS: tc.tls, CredentialsSecretRef: configapi.CredentialsReference{Namespace: "identity", Name: "openldap", Key: "LDAP_ROOT_PASSWORD"}},
-				NamespaceSelector:  &metav1.LabelSelector{MatchLabels: map[string]string{backendLabel: "directory"}},
-				AllowedBases:       []string{"ou=system,dc=example,dc=test"},
-			}}
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media", Labels: map[string]string{backendLabel: tc.label}}}
-			k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc, ns).Build()
-			entry := testEntry(t, "ClusterProviderConfig", "directory")
-			entry.Annotations = map[string]string{"crossplane.io/external-name": tc.dn}
-			spec, _, err := providerSettings(context.Background(), k, entry)
-			if (err == nil) != tc.allowed {
-				t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
-			}
-			if tc.allowed && spec.CredentialsSecretRef.Namespace != "identity" {
-				t.Fatal("central credential namespace lost")
-			}
-		})
-	}
+func testEntry(kind, name string) *entryapi.Entry {
+	return &entryapi.Entry{ObjectMeta: metav1.ObjectMeta{Namespace: "media"}, Spec: entryapi.EntrySpec{ManagedResourceSpec: xpv2.ManagedResourceSpec{ProviderConfigReference: &xpv2.ProviderConfigReference{Kind: kind, Name: name}}, ForProvider: entryapi.EntryParameters{DN: "uid=media.service,ou=system,dc=example,dc=test"}}}
 }
-
-func TestClusterProviderNamespaceSelector(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		selector *metav1.LabelSelector
-		allowed  bool
-	}{
-		{"missing", nil, false},
-		{"empty", &metav1.LabelSelector{}, false},
-		{"empty labels", &metav1.LabelSelector{MatchLabels: map[string]string{}}, false},
-		{"invalid key", &metav1.LabelSelector{MatchLabels: map[string]string{"invalid key": "yes"}}, false},
-		{"invalid operator", &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "directory", Operator: "Invalid"}}}, false},
-		{"matching labels", &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, true},
-		{"nonmatching labels", &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "other"}}, false},
-		{"matching expression", &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "directory", Operator: metav1.LabelSelectorOpIn, Values: []string{"shared"}}}}, true},
-		{"nonmatching expression", &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "directory", Operator: metav1.LabelSelectorOpDoesNotExist}}}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			scheme := runtime.NewScheme()
-			if err := corev1.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			if err := configapi.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			pc := &configapi.ClusterProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: configapi.ClusterProviderConfigSpec{
-				ProviderConfigSpec: configapi.ProviderConfigSpec{TLS: true, CredentialsSecretRef: configapi.CredentialsReference{Namespace: "platform", Name: "directory", Key: "password"}},
-				NamespaceSelector:  tc.selector,
-				AllowedBases:       []string{"ou=system,dc=example,dc=test"},
-			}}
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media", Labels: map[string]string{"directory": "shared"}}}
-			k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc, ns).Build()
-			entry := testEntry(t, "ClusterProviderConfig", "shared")
-			entry.Annotations = map[string]string{"crossplane.io/external-name": "uid=media.service,ou=system,dc=example,dc=test"}
-			_, _, err := providerSettings(context.Background(), k, entry)
-			if (err == nil) != tc.allowed {
-				t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
-			}
-			if !tc.allowed {
-				entry.SetUID(types.UID("denied-selector"))
-				entry.SetGroupVersionKind(entryapi.CRDGroupVersion.WithKind("Entry"))
-				tracker := xpresource.NewProviderConfigUsageTracker(k, &configapi.ProviderConfigUsage{})
-				if _, err := setupLDAP(context.Background(), k, entry, tracker); err == nil {
-					t.Fatal("unauthorized shared provider connection accepted")
-				}
-				usages := &configapi.ProviderConfigUsageList{}
-				if err := k.List(context.Background(), usages); err != nil {
-					t.Fatal(err)
-				}
-				if len(usages.Items) != 0 {
-					t.Fatal("unauthorized connection created a provider usage")
-				}
-			}
-		})
-	}
+func credentials(namespace string) configapi.ProviderCredentials {
+	return configapi.ProviderCredentials{Source: xpv2.CredentialsSourceSecret, CommonCredentialSelectors: xpv2.CommonCredentialSelectors{SecretRef: &xpv2.SecretKeySelector{SecretReference: xpv2.SecretReference{Namespace: namespace, Name: "credentials"}, Key: "connection.yaml"}}}
 }
-
-func TestNamespacedProviderCannotReadAnotherNamespace(t *testing.T) {
+func testScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
 	scheme := runtime.NewScheme()
-	if err := configapi.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, configapi.AddToScheme, entryapi.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
 	}
-	for _, namespace := range []string{"", "media", "identity"} {
-		pc := &configapi.ProviderConfig{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Name: "local"}, Spec: configapi.ProviderConfigSpec{CredentialsSecretRef: configapi.CredentialsReference{Namespace: namespace}}}
-		k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc).Build()
-		spec, _, err := providerSettings(context.Background(), k, testEntry(t, "ProviderConfig", "local"))
-		if namespace == "identity" {
+	return scheme
+}
+func TestNamespacedProviderCredentialBoundary(t *testing.T) {
+	for _, namespace := range []string{"", "media", "other"} {
+		pc := &configapi.ProviderConfig{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Name: "local"}, Spec: configapi.ProviderConfigSpec{Credentials: credentials(namespace)}}
+		kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc).Build()
+		creds, _, err := providerSettings(context.Background(), kube, testEntry("ProviderConfig", "local"))
+		if namespace == "other" {
 			if err == nil {
-				t.Fatal("cross-namespace credential reference accepted")
+				t.Fatal("accepted cross-namespace credentials")
 			}
 			continue
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		if spec.CredentialsSecretRef.Namespace != "media" {
+		if creds.SecretRef.Namespace != "media" {
 			t.Fatal("local credential namespace not resolved")
 		}
 	}
 }
-
-func testEntry(t *testing.T, kind, name string) *entryapi.Entry {
-	t.Helper()
-	raw, err := json.Marshal(map[string]any{"metadata": map[string]any{"namespace": "media", "annotations": map[string]any{"crossplane.io/external-name": "uid=media.service,ou=system,dc=example,dc=test"}}, "spec": map[string]any{"providerConfigRef": map[string]any{"kind": kind, "name": name}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := &entryapi.Entry{}
-	if err := json.Unmarshal(raw, entry); err != nil {
-		t.Fatal(err)
-	}
-	return entry
-}
-
-// Exercise a real LDAP bind and Crossplane disconnection without a directory process.
-func TestReconciliationConnectionLifecycle(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	var sockets []net.Conn
-	boundPasswords := make(chan string, 8)
-	t.Cleanup(func() {
-		listener.Close()
-		mu.Lock()
-		defer mu.Unlock()
-		for _, socket := range sockets {
-			socket.Close()
-		}
-	})
-	go func() {
-		for {
-			socket, err := listener.Accept()
-			if err != nil {
-				return
+func TestClusterProviderAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		selector        *metav1.LabelSelector
+		namespaceLabels map[string]string
+		dn              string
+		allowed         bool
+	}{
+		{"missing selector", nil, nil, "uid=media.service,ou=system,dc=example,dc=test", false},
+		{"empty selector", &metav1.LabelSelector{}, nil, "uid=media.service,ou=system,dc=example,dc=test", false},
+		{"invalid selector", &metav1.LabelSelector{MatchLabels: map[string]string{"bad key": "yes"}}, nil, "uid=media.service,ou=system,dc=example,dc=test", false},
+		{"denied namespace", &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, nil, "uid=media.service,ou=system,dc=example,dc=test", false},
+		{"authorized namespace", &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, map[string]string{"directory": "shared"}, "uid=media.service,ou=system,dc=example,dc=test", true},
+		{"matching expression", &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "directory", Operator: metav1.LabelSelectorOpIn, Values: []string{"shared"}}}}, map[string]string{"directory": "shared"}, "uid=media.service,ou=system,dc=example,dc=test", true},
+		{"wrong DN prefix", &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, map[string]string{"directory": "shared"}, "uid=other.service,ou=system,dc=example,dc=test", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &configapi.ClusterProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: configapi.ClusterProviderConfigSpec{ProviderConfigSpec: configapi.ProviderConfigSpec{Credentials: credentials("platform")}, NamespaceSelector: tc.selector, AllowedBases: []string{"ou=system,dc=example,dc=test"}}}
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media", Labels: tc.namespaceLabels}}
+			kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, ns).Build()
+			entry := testEntry("ClusterProviderConfig", "shared")
+			entry.Spec.ForProvider.DN = tc.dn
+			_, shared, err := providerSettings(context.Background(), kube, entry)
+			if (err == nil) != tc.allowed {
+				t.Fatalf("allowed=%v error=%v", tc.allowed, err)
 			}
-			mu.Lock()
-			sockets = append(sockets, socket)
-			mu.Unlock()
-			go func() {
-				defer socket.Close()
-				packet, err := ber.ReadPacket(socket)
-				if err != nil {
-					return
-				}
-				boundPasswords <- string(packet.Children[1].Children[2].Data.Bytes())
-				// LDAP BindResponse: message ID 1, successful result, empty matched DN and diagnostic.
-				if _, err := socket.Write([]byte{0x30, 0x0c, 0x02, 0x01, 0x01, 0x61, 0x07, 0x0a, 0x01, 0x00, 0x04, 0x00, 0x04, 0x00}); err != nil {
-					return
-				}
-				_, _ = io.Copy(io.Discard, socket)
-			}()
-		}
-	}()
-	_, rawPort, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(rawPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := configapi.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	pc := &configapi.ProviderConfig{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Name: "local"}, Spec: configapi.ProviderConfigSpec{
-		Host: "127.0.0.1", Port: port, BindDN: "cn=fixture", TLS: false,
-		CredentialsSecretRef: configapi.CredentialsReference{Name: "credentials", Key: "password"},
-	}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Name: "credentials"}, Data: map[string][]byte{"password": []byte("disposable-one")}}
-	k := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc, secret).Build()
-	entry := testEntry(t, "ProviderConfig", "local")
-	for _, fail := range []bool{false, true} {
-		t.Run(fmt.Sprintf("connect failure=%v", fail), func(t *testing.T) {
-			var opened *ldapclient.Client
-			connector := &ldapConnector{newConnector: func(sf terraform.SetupFn) managed.ExternalConnector {
-				return managed.ExternalConnectorFn(func(ctx context.Context, mg xpresource.Managed) (managed.ExternalClient, error) {
-					setup, err := sf(ctx, k, mg)
-					if err != nil {
-						return nil, err
-					}
-					opened = setup.Meta.(*ldapclient.Client)
-					if password := <-boundPasswords; password != string(secret.Data["password"]) {
-						t.Fatalf("bound with stale credentials: %q", password)
-					}
-					if fail {
-						return nil, errors.New("failure after bind")
-					}
-					return managed.ExternalClientFns{DisconnectFn: func(context.Context) error { return nil }}, nil
-				})
-			}}
-			external, err := connector.Connect(context.Background(), entry)
-			if fail {
-				if err == nil || opened == nil || !opened.Conn.IsClosing() {
-					t.Fatal("failed connection retained a bound LDAP socket")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if opened.Conn.IsClosing() {
-				t.Fatal("socket closed before reconciliation completed")
-			}
-			first := opened.Conn
-			if err = external.Disconnect(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if !first.IsClosing() {
-				t.Fatal("Disconnect retained a bound LDAP socket")
-			}
-			if err = k.Get(context.Background(), types.NamespacedName{Namespace: "media", Name: "credentials"}, secret); err != nil {
-				t.Fatal(err)
-			}
-			secret.Data["password"] = []byte("disposable-two")
-			if err = k.Update(context.Background(), secret); err != nil {
-				t.Fatal(err)
-			}
-			next, err := connector.Connect(context.Background(), entry)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if opened.Conn == first {
-				t.Fatal("next reconciliation reused a closed credential connection")
-			}
-			if err = next.Disconnect(context.Background()); err != nil {
-				t.Fatal(err)
+			if tc.allowed && !shared {
+				t.Fatal("lost shared configuration boundary")
 			}
 		})
 	}
 }
-
-func TestNamespacedProviderRequiresExternalDN(t *testing.T) {
-	for _, dn := range []string{"", "not a DN"} {
-		entry := testEntry(t, "ProviderConfig", "local")
-		entry.Annotations["crossplane.io/external-name"] = dn
-		_, _, err := providerSettings(context.Background(), fake.NewClientBuilder().Build(), entry)
-		if err == nil {
-			t.Fatalf("invalid DN %q accepted", dn)
+func TestSharedCredentialsRequireTLS(t *testing.T) {
+	pc := &configapi.ClusterProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: configapi.ClusterProviderConfigSpec{ProviderConfigSpec: configapi.ProviderConfigSpec{Credentials: credentials("platform")}, NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, AllowedBases: []string{"ou=system,dc=example,dc=test"}}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media", Labels: map[string]string{"directory": "shared"}}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "platform"}, Data: map[string][]byte{"connection.yaml": []byte("host: localhost\nbindDN: cn=admin\npassword: secret\ntls: false\n")}}
+	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, ns, secret).Build()
+	if _, err := connectionSettings(context.Background(), kube, testEntry("ClusterProviderConfig", "shared")); err == nil {
+		t.Fatal("shared plaintext connection accepted")
+	}
+}
+func TestConnectionDocument(t *testing.T) {
+	cfg, err := parseConnection([]byte("host: directory.example\nbindDN: cn=admin\npassword: test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !*cfg.TLS || cfg.Port != 636 {
+		t.Fatal("connection defaults must use verified TLS on port 636")
+	}
+	for _, doc := range []string{"host: [credential-value]", "host: localhost\nbindDN: cn=admin\npassword: credential-value\nunknown: leaked", "host: localhost\nbindDN: cn=admin\npassword: credential-value\nport: 0"} {
+		if _, err := parseConnection([]byte(doc)); err == nil || strings.Contains(err.Error(), "credential-value") {
+			t.Fatalf("invalid connection accepted or credential leaked: %v", err)
 		}
+	}
+}
+
+func TestProviderUsageFollowsMissingReference(t *testing.T) {
+	ctx := context.Background()
+	pc := &configapi.ProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: "media"}, Spec: configapi.ProviderConfigSpec{Credentials: credentials("media")}}
+	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc).Build()
+	connector := &ldapConnector{kube: kube, tracker: resource.NewProviderConfigUsageTracker(kube, &configapi.ProviderConfigUsage{})}
+	entry := testEntry("ProviderConfig", "first")
+	entry.Name = "service"
+	entry.UID = types.UID("fixture-uid")
+	entry.SetGroupVersionKind(entryapi.CRDGroupVersion.WithKind("Entry"))
+	// Missing credentials stop before binding, but the reference must still be tracked.
+	if _, err := connector.Connect(ctx, entry); err == nil {
+		t.Fatal("connection without credentials succeeded")
+	}
+	entry.Spec.ProviderConfigReference.Name = "missing-backend"
+	if _, err := connector.Connect(ctx, entry); err == nil {
+		t.Fatal("missing provider was accepted")
+	}
+	usages := &configapi.ProviderConfigUsageList{}
+	if err := kube.List(ctx, usages); err != nil {
+		t.Fatal(err)
+	}
+	if len(usages.Items) != 1 || usages.Items[0].GetProviderConfigReference().Name != "missing-backend" {
+		t.Fatal("usage retained the previous provider reference")
+	}
+}
+func TestTrackedSharedReferenceDoesNotBypassAuthorization(t *testing.T) {
+	ctx := context.Background()
+	pc := &configapi.ClusterProviderConfig{ObjectMeta: metav1.ObjectMeta{Name: "shared"}, Spec: configapi.ClusterProviderConfigSpec{ProviderConfigSpec: configapi.ProviderConfigSpec{Credentials: credentials("platform")}, NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"directory": "shared"}}, AllowedBases: []string{"ou=system,dc=example,dc=test"}}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media"}}
+	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, ns).Build()
+	connector := &ldapConnector{kube: kube, tracker: resource.NewProviderConfigUsageTracker(kube, &configapi.ProviderConfigUsage{})}
+	entry := testEntry("ClusterProviderConfig", "shared")
+	entry.Name = "service"
+	entry.UID = types.UID("denied-uid")
+	entry.SetGroupVersionKind(entryapi.CRDGroupVersion.WithKind("Entry"))
+	if _, err := connector.Connect(ctx, entry); err == nil || !strings.Contains(err.Error(), "not authorized") {
+		t.Fatalf("shared reference bypassed namespace authorization: %v", err)
 	}
 }

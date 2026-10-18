@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ldap-fixture
+data:
+  slapd.conf: |
+    include /etc/openldap/schema/core.schema
+    include /etc/openldap/schema/cosine.schema
+    include /etc/openldap/schema/inetorgperson.schema
+    modulepath /usr/lib/openldap
+    moduleload back_mdb
+    pidfile /tmp/slapd.pid
+    argsfile /tmp/slapd.args
+    database mdb
+    maxsize 10485760
+    suffix "dc=example,dc=test"
+    rootdn "cn=admin,dc=example,dc=test"
+    rootpw disposable-fixture-password
+    directory /tmp/database
+    access to attrs=userPassword by self write by anonymous auth by dn.exact="cn=admin,dc=example,dc=test" manage by * none
+    access to * by dn.exact="cn=admin,dc=example,dc=test" manage by * none
+  base.ldif: |
+    dn: dc=example,dc=test
+    objectClass: domain
+    dc: example
+
+    dn: ou=users,dc=example,dc=test
+    objectClass: organizationalUnit
+    ou: users
+
+    dn: ou=groups,dc=example,dc=test
+    objectClass: organizationalUnit
+    ou: groups
+  drift.ldif: |
+    dn: uid=service,ou=users,dc=example,dc=test
+    changetype: modify
+    replace: cn
+    cn: drifted
+    -
+    replace: description
+    description: external owner
+    -
+    replace: telephoneNumber
+    telephoneNumber: 555-0100
+    -
+  restart-drift.ldif: |
+    dn: uid=service,ou=users,dc=example,dc=test
+    changetype: modify
+    replace: cn
+    cn: drifted-after-restart
+    -
+  observe.ldif: |
+    dn: uid=service,ou=users,dc=example,dc=test
+    changetype: modify
+    replace: cn
+    cn: external observer
+    -
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ldap-fixture
+  template:
+    metadata:
+      labels:
+        app: ldap-fixture
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ldap
+          image: provider-ldap-tests:development
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - ulimit -n 1024; mkdir -p /tmp/database; exec slapd -f /fixtures/slapd.conf -h ldap://0.0.0.0:1389 -d 0
+          ports:
+            - name: ldap
+              containerPort: 1389
+          readinessProbe:
+            tcpSocket:
+              port: ldap
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: temporary
+              mountPath: /tmp
+            - name: fixtures
+              mountPath: /fixtures
+              readOnly: true
+      volumes:
+        - name: temporary
+          emptyDir: {}
+        - name: fixtures
+          configMap:
+            name: ldap-fixture
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ldap
+spec:
+  selector:
+    app: ldap-fixture
+  ports:
+    - name: ldap
+      port: 1389
+      targetPort: ldap

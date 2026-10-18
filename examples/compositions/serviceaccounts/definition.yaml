@@ -1,0 +1,150 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: serviceaccounts.examples.ldap.finnes.dev
+spec:
+  scope: Namespaced
+  group: examples.ldap.finnes.dev
+  names:
+    kind: ServiceAccount
+    plural: serviceaccounts
+  defaultCompositionRef:
+    name: example-serviceaccounts
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - cn
+                - baseDN
+                - backendRef
+                - secretName
+              properties:
+                cn:
+                  type: string
+                  pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: cn is immutable
+                baseDN:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: baseDN is immutable
+                description:
+                  type: string
+                deletionPolicy:
+                  type: string
+                  enum:
+                    - Delete
+                    - Orphan
+                  default: Delete
+                backendRef:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                    kind:
+                      type: string
+                      enum:
+                        - ProviderConfig
+                        - ClusterProviderConfig
+                      default: ProviderConfig
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: backendRef is immutable
+                rotationID:
+                  type: string
+                  default: ""
+                secretName:
+                  type: string
+                  minLength: 1
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: secretName is immutable
+---
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: example-serviceaccounts
+spec:
+  compositeTypeRef:
+    apiVersion: examples.ldap.finnes.dev/v1alpha1
+    kind: ServiceAccount
+  mode: Pipeline
+  pipeline:
+    - step: ldap
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource -}}
+            {{- $spec := $xr.spec -}}
+            {{- $entry := getComposedResource . "entry" -}}
+            {{- $policies := list "Observe" "Create" "Update" -}}
+            {{- if eq ($spec.deletionPolicy | default "Delete") "Delete" }}{{ $policies = append $policies "Delete" }}{{ end -}}
+            {{- $secret := getComposedResource . "password" -}}
+            {{- $rotation := $spec.rotationID | default "" -}}
+            {{- $password := "" -}}
+            {{- if and $secret (dig "data" "password" "" $secret) (eq (dig "metadata" "annotations" "examples.ldap.finnes.dev/rotation-id" "" $secret) $rotation) -}}
+              {{- $password = $secret.data.password -}}
+            {{- else -}}
+              {{- $password = randAlphaNum 32 | b64enc -}}
+            {{- end -}}
+            ---
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: {{ $spec.secretName }}
+              namespace: {{ $xr.metadata.namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "password" }}
+                gotemplating.fn.crossplane.io/ready: "True"
+                examples.ldap.finnes.dev/rotation-id: {{ $rotation | quote }}
+            type: Opaque
+            data:
+              password: {{ $password | quote }}
+            {{- if or $entry (and $secret (dig "data" "password" "" $secret)) }}
+            ---
+            apiVersion: ldap.finnes.dev/v1alpha1
+            kind: Entry
+            metadata:
+              name: {{ printf "service-%s" $xr.metadata.uid }}
+              namespace: {{ $xr.metadata.namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "entry" }}
+                gotemplating.fn.crossplane.io/ready: {{ and (eq (getResourceCondition "Ready" $entry).Status "True") (eq (getResourceCondition "Synced" $entry).Status "True") | ternary "True" "False" | quote }}
+            spec:
+              managementPolicies: {{ $policies | toJson }}
+              providerConfigRef: {{ $spec.backendRef | toJson }}
+              forProvider:
+                dn: {{ printf "uid=%s,%s" $spec.cn $spec.baseDN | quote }}
+                attributes:
+                  cn: [{{ $spec.cn | quote }}]
+                  sn: [Service]
+                  {{- if hasKey $spec "description" }}
+                  description: {{ if $spec.description }}[{{ $spec.description | quote }}]{{ else }}[]{{ end }}
+                  {{- end }}
+                additiveAttributes:
+                  objectClass: [inetOrgPerson]
+                attributeSecretRefs:
+                  userPassword:
+                    name: {{ $spec.secretName }}
+                    key: password
+            {{- end }}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cluster="provider-ldap-test-$$"
@@ -10,7 +10,6 @@ package_file=${PROVIDER_PACKAGE:-/tmp/provider-ldap.xpkg}
 registry="${cluster}-registry"
 registry_image=registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
 tests_image=${TESTS_IMAGE:-provider-ldap-tests:development}
-test_pattern=${INTEGRATION_TEST_PATTERN:-Test}
 cleanup() {
     result=$?
     trap - EXIT
@@ -20,11 +19,14 @@ cleanup() {
         fi
         kubectl get provider,providerrevision -o yaml >&2 || true
         kubectl get pods --all-namespaces >&2 || true
-        kubectl logs --namespace ldap-test ldap-tests >&2 || true
+        kubectl get entries.ldap.finnes.dev --all-namespaces -o yaml >&2 || true
+        kubectl get providerconfigusages.ldap.finnes.dev --all-namespaces -o yaml >&2 || true
+        kubectl logs --namespace ldap-test deployment/ldap >&2 || true
         kubectl logs --namespace crossplane-system -l app.kubernetes.io/name=ldap-provider --tail=80 >&2 || true
     fi
     kind delete cluster --name "$cluster" || true
     docker rm -f "$registry" >/dev/null 2>&1 || true
+    rm -f /tmp/provider-ldap-generated-password.sha256
     rm -rf -- "$work_dir"
     exit "$result"
 }
@@ -44,7 +46,7 @@ server = "http://$registry_address"
     capabilities = ["pull", "resolve"]
 CONFIG
 crossplane xpkg push --insecure-skip-tls-verify --package-files "$package_file" \
-    "$registry_address/provider-ldap:v0.1.0"
+    "$registry_address/provider-ldap:development"
 # Restricted namespaces also exercise the runtime security configuration.
 for namespace in crossplane-system ldap-test; do
     kubectl create namespace "$namespace"
@@ -74,14 +76,10 @@ helm upgrade --install crossplane crossplane --repo https://charts.crossplane.io
     --set-json 'securityContextRBACManager={"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}' \
     --set 'args[0]=--poll-interval=2s' --wait --timeout 4m
 cp "$repo_dir/tests/provider.yaml" "$work_dir/provider.yaml"
-REGISTRY_ADDRESS="$registry_address" yq -i '(select(.kind == "Provider") | .spec.package) = strenv(REGISTRY_ADDRESS) + "/provider-ldap:v0.1.0" | (select(.kind == "DeploymentRuntimeConfig" and .metadata.name == "ldap") | .spec.deploymentTemplate.spec.template.spec.containers[0].args) = ["--poll-interval=2s"]' "$work_dir/provider.yaml"
+REGISTRY_ADDRESS="$registry_address" yq -i '(select(.kind == "Provider") | .spec.package) = strenv(REGISTRY_ADDRESS) + "/provider-ldap:development" | (select(.kind == "DeploymentRuntimeConfig" and .metadata.name == "ldap") | .spec.deploymentTemplate.spec.template.spec.containers[0].args) = ["--poll-interval=2s"]' "$work_dir/provider.yaml"
 kubectl apply --filename "$work_dir/provider.yaml"
 kubectl wait provider/ldap --for=condition=Healthy --timeout=180s
-kubectl wait crd/entries.ldap.ops.finnes.dev --for=condition=Established --timeout=90s
-cp "$repo_dir/tests/kubernetes.yaml" "$work_dir/tests.yaml"
-TESTS_IMAGE="$tests_image" TEST_PATTERN="$test_pattern" yq -i '(select(.kind == "Pod") | .spec.containers[0].image) = strenv(TESTS_IMAGE) | (select(.kind == "Pod") | .spec.containers[0].args[2]) = "-test.run=" + strenv(TEST_PATTERN)' "$work_dir/tests.yaml"
-kubectl apply --filename "$work_dir/tests.yaml"
-kubectl wait pod/ldap-tests --namespace ldap-test \
-    --for=jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' --timeout=9m
-kubectl logs --namespace ldap-test ldap-tests
-[[ $(kubectl get pod ldap-tests --namespace ldap-test --output jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}') == 0 ]]
+kubectl wait crd/entries.ldap.finnes.dev --for=condition=Established --timeout=90s
+report_path=${CHAINSAW_REPORT_PATH:-$work_dir/reports}
+mkdir -p "$report_path"
+chainsaw test "$repo_dir/tests/e2e" --report-format JUNIT-TEST --report-path "$report_path"

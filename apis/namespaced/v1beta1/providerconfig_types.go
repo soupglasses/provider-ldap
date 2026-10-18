@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 // +kubebuilder:object:generate=true
-// +groupName=ldap.ops.finnes.dev
+// +groupName=ldap.finnes.dev
 package v1beta1
 
 import (
@@ -12,28 +12,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
-type CredentialsReference struct {
-	// Namespace is required for cluster configurations and local for namespaced configurations.
-	// +kubebuilder:validation:MinLength=1
-	Namespace string `json:"namespace,omitempty"`
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-	// +kubebuilder:validation:MinLength=1
-	Key string `json:"key"`
+// ProviderCredentials selects a YAML or JSON connection document in a Secret.
+// +kubebuilder:validation:XValidation:rule="has(self.secretRef) && !has(self.env) && !has(self.fs)",message="credentials must specify only a Secret reference"
+type ProviderCredentials struct {
+	// +kubebuilder:validation:Enum=Secret
+	Source                         xpv2.CredentialsSource `json:"source"`
+	xpv2.CommonCredentialSelectors `json:",inline"`
 }
 type ProviderConfigSpec struct {
-	// +kubebuilder:validation:MinLength=1
-	Host string `json:"host"`
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int `json:"port"`
-	// +kubebuilder:validation:MinLength=1
-	BindDN string `json:"bindDN"`
-	// TLSServerName selects the certificate name when it differs from the connection host.
-	TLSServerName string `json:"tlsServerName,omitempty"`
-	// +kubebuilder:default=true
-	TLS                  bool                 `json:"tls"`
-	CredentialsSecretRef CredentialsReference `json:"credentialsSecretRef"`
+	Credentials ProviderCredentials `json:"credentials"`
 }
 
 // +kubebuilder:object:root=true
@@ -63,7 +50,7 @@ type ClusterProviderConfig struct {
 	Status            xpv2.ProviderConfigStatus `json:"status,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="self.tls && has(self.credentialsSecretRef.namespace) && size(self.credentialsSecretRef.namespace) > 0",message="shared credentials require TLS and an explicit secret namespace"
+// +kubebuilder:validation:XValidation:rule="has(self.credentials.secretRef) && size(self.credentials.secretRef.namespace) > 0",message="shared credentials require an explicit secret namespace"
 type ClusterProviderConfigSpec struct {
 	ProviderConfigSpec `json:",inline"`
 	// NamespaceSelector authorizes namespaces to use these shared credentials.
@@ -98,7 +85,7 @@ type ProviderConfigUsageList struct {
 	Items           []ProviderConfigUsage `json:"items"`
 }
 
-var SchemeBuilder = &scheme.Builder{GroupVersion: schema.GroupVersion{Group: "ldap.ops.finnes.dev", Version: "v1beta1"}}
+var SchemeBuilder = &scheme.Builder{GroupVersion: schema.GroupVersion{Group: "ldap.finnes.dev", Version: "v1beta1"}}
 var AddToScheme = SchemeBuilder.AddToScheme
 
 func init() {

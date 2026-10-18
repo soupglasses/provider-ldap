@@ -3,9 +3,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: providerconfigs.ldap.ops.finnes.dev
+  name: providerconfigs.ldap.finnes.dev
 spec:
-  group: ldap.ops.finnes.dev
+  group: ldap.finnes.dev
   names:
     kind: ProviderConfig
     listKind: ProviderConfigList
@@ -36,44 +36,65 @@ spec:
               type: object
             spec:
               properties:
-                bindDN:
-                  minLength: 1
-                  type: string
-                credentialsSecretRef:
+                credentials:
+                  description: ProviderCredentials selects a YAML or JSON connection document in a Secret.
                   properties:
-                    key:
-                      minLength: 1
-                      type: string
-                    name:
-                      minLength: 1
-                      type: string
-                    namespace:
-                      description: Namespace is required for cluster configurations and local for namespaced configurations.
-                      minLength: 1
+                    env:
+                      description: |-
+                        Env is a reference to an environment variable that contains credentials
+                        that must be used to connect to the provider.
+                      properties:
+                        name:
+                          description: Name is the name of an environment variable.
+                          type: string
+                      required:
+                        - name
+                      type: object
+                    fs:
+                      description: |-
+                        Fs is a reference to a filesystem location that contains credentials that
+                        must be used to connect to the provider.
+                      properties:
+                        path:
+                          description: Path is a filesystem path.
+                          type: string
+                      required:
+                        - path
+                      type: object
+                    secretRef:
+                      description: |-
+                        A SecretRef is a reference to a secret key that contains the credentials
+                        that must be used to connect to the provider.
+                      properties:
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          description: Name of the secret.
+                          type: string
+                        namespace:
+                          description: Namespace of the secret.
+                          type: string
+                      required:
+                        - key
+                        - name
+                        - namespace
+                      type: object
+                    source:
+                      description: |-
+                        A CredentialsSource is a source from which provider credentials may be
+                        acquired.
+                      enum:
+                        - Secret
                       type: string
                   required:
-                    - key
-                    - name
+                    - source
                   type: object
-                host:
-                  minLength: 1
-                  type: string
-                port:
-                  maximum: 65535
-                  minimum: 1
-                  type: integer
-                tls:
-                  default: true
-                  type: boolean
-                tlsServerName:
-                  description: TLSServerName selects the certificate name when it differs from the connection host.
-                  type: string
+                  x-kubernetes-validations:
+                    - message: credentials must specify only a Secret reference
+                      rule: has(self.secretRef) && !has(self.env) && !has(self.fs)
               required:
-                - bindDN
-                - credentialsSecretRef
-                - host
-                - port
-                - tls
+                - credentials
               type: object
             status:
               description: A ProviderConfigStatus defines the observed status of a ProviderConfig.

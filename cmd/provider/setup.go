@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -13,10 +14,9 @@ import (
 	"strings"
 	"time"
 
-	xpresource "github.com/crossplane/crossplane-runtime/v2/pkg/resource"
-	"github.com/crossplane/upjet/v2/pkg/terraform"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	"github.com/go-ldap/ldap/v3"
-	ldapclient "github.com/l-with/terraform-provider-ldap/client"
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
 	configapi "github.com/soupglasses/provider-ldap/apis/namespaced/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -24,9 +24,38 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 )
 
 const ldapTimeout = 10 * time.Second
+
+// ConnectionDocument is decoded only in memory from the provider credential Secret.
+type ConnectionDocument struct {
+	Host          string `json:"host"`
+	Port          int    `json:"port,omitempty"`
+	BindDN        string `json:"bindDN"`
+	Password      string `json:"password"`
+	TLS           *bool  `json:"tls,omitempty"`
+	TLSServerName string `json:"tlsServerName,omitempty"`
+}
+
+func parseConnection(data []byte) (ConnectionDocument, error) {
+	out := ConnectionDocument{Port: 636}
+	if err := yaml.UnmarshalStrict(data, &out); err != nil {
+		return out, fmt.Errorf("credentials must contain a valid YAML or JSON LDAP connection document")
+	}
+	if out.Host == "" || out.BindDN == "" || out.Password == "" || out.Port < 1 || out.Port > 65535 {
+		return out, fmt.Errorf("connection document requires host, bindDN, nonempty password and a valid port")
+	}
+	if out.TLS == nil {
+		value := true
+		out.TLS = &value
+	}
+	if _, err := ldap.ParseDN(out.BindDN); err != nil {
+		return out, fmt.Errorf("connection document bindDN is invalid")
+	}
+	return out, nil
+}
 
 // validateEntryDN uses parsed RDNs so escaping and case changes cannot escape the ownership boundary.
 func validateEntryDN(raw, namespace string, bases []string) error {
@@ -60,107 +89,104 @@ func validateEntryDN(raw, namespace string, bases []string) error {
 	return fmt.Errorf("entry must be a direct child of an allowed base")
 }
 
-func providerSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (configapi.ProviderConfigSpec, string, error) {
-	dn, err := ldap.ParseDN(entry.Annotations["crossplane.io/external-name"])
-	if err != nil || len(dn.RDNs) == 0 {
-		return configapi.ProviderConfigSpec{}, "", fmt.Errorf("external name must be a valid nonempty LDAP DN")
+// providerSettings authorizes the reference before any credentials are retrieved.
+func providerSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (configapi.ProviderCredentials, bool, error) {
+	if _, err := parseDN(entry.Spec.ForProvider.DN); err != nil {
+		return configapi.ProviderCredentials{}, false, err
 	}
-	ref := entry.Spec.ProviderConfigReference
+	ref := entry.GetProviderConfigReference()
 	if ref == nil || ref.Name == "" {
-		return configapi.ProviderConfigSpec{}, "", fmt.Errorf("a provider configuration reference is required")
+		return configapi.ProviderCredentials{}, false, fmt.Errorf("a provider configuration reference is required")
 	}
+	var creds configapi.ProviderCredentials
+	shared := false
 	switch ref.Kind {
 	case "ProviderConfig":
 		pc := &configapi.ProviderConfig{}
 		if err := k.Get(ctx, types.NamespacedName{Namespace: entry.Namespace, Name: ref.Name}, pc); err != nil {
-			return configapi.ProviderConfigSpec{}, "", err
+			return creds, false, err
 		}
-		if pc.Spec.CredentialsSecretRef.Namespace != "" && pc.Spec.CredentialsSecretRef.Namespace != entry.Namespace {
-			return configapi.ProviderConfigSpec{}, "", fmt.Errorf("namespaced provider credentials must remain in the entry namespace")
+		creds = pc.Spec.Credentials
+		if creds.SecretRef == nil || (creds.SecretRef.Namespace != "" && creds.SecretRef.Namespace != entry.Namespace) {
+			return creds, false, fmt.Errorf("namespaced provider credentials must remain in the entry namespace")
 		}
-		pc.Spec.CredentialsSecretRef.Namespace = entry.Namespace
-		return pc.Spec, "ProviderConfig/" + entry.Namespace + "/" + ref.Name, nil
+		copy := *creds.SecretRef
+		copy.Namespace = entry.Namespace
+		creds.SecretRef = &copy
 	case "ClusterProviderConfig":
+		shared = true
 		pc := &configapi.ClusterProviderConfig{}
 		if err := k.Get(ctx, types.NamespacedName{Name: ref.Name}, pc); err != nil {
-			return configapi.ProviderConfigSpec{}, "", err
-		}
-		if pc.Spec.NamespaceSelector == nil {
-			return configapi.ProviderConfigSpec{}, "", fmt.Errorf("cluster provider requires a nonempty namespace selector")
+			return creds, false, err
 		}
 		selector, err := metav1.LabelSelectorAsSelector(pc.Spec.NamespaceSelector)
-		if err != nil || selector.Empty() {
-			return configapi.ProviderConfigSpec{}, "", fmt.Errorf("cluster provider requires a valid nonempty namespace selector")
+		if pc.Spec.NamespaceSelector == nil || err != nil || selector.Empty() {
+			return creds, false, fmt.Errorf("cluster provider requires a valid nonempty namespace selector")
 		}
 		namespace := &corev1.Namespace{}
 		if err := k.Get(ctx, types.NamespacedName{Name: entry.Namespace}, namespace); err != nil {
-			return configapi.ProviderConfigSpec{}, "", err
+			return creds, false, err
 		}
 		if !selector.Matches(labels.Set(namespace.Labels)) {
-			return configapi.ProviderConfigSpec{}, "", fmt.Errorf("entry namespace has not opted in to this directory backend")
+			return creds, false, fmt.Errorf("entry namespace is not authorized by the directory backend")
 		}
-		if err := validateEntryDN(entry.Annotations["crossplane.io/external-name"], entry.Namespace, pc.Spec.AllowedBases); err != nil {
-			return configapi.ProviderConfigSpec{}, "", err
+		if err := validateEntryDN(entry.Spec.ForProvider.DN, entry.Namespace, pc.Spec.AllowedBases); err != nil {
+			return creds, false, err
 		}
-		if !pc.Spec.TLS || pc.Spec.CredentialsSecretRef.Namespace == "" {
-			return configapi.ProviderConfigSpec{}, "", fmt.Errorf("cluster provider requires verified TLS and an explicit credential namespace")
+		creds = pc.Spec.Credentials
+		if creds.SecretRef == nil || creds.SecretRef.Namespace == "" {
+			return creds, false, fmt.Errorf("shared credentials require an explicit Secret namespace")
 		}
-		return pc.Spec.ProviderConfigSpec, "ClusterProviderConfig/" + ref.Name, nil
 	default:
-		return configapi.ProviderConfigSpec{}, "", fmt.Errorf("unsupported provider configuration kind")
+		return creds, false, fmt.Errorf("unsupported provider configuration kind")
 	}
+	if creds.Source != xpv2.CredentialsSourceSecret || creds.SecretRef == nil || creds.SecretRef.Name == "" || creds.SecretRef.Key == "" || creds.Env != nil || creds.Fs != nil {
+		return creds, false, fmt.Errorf("provider credentials require source Secret and a complete secretRef")
+	}
+	return creds, shared, nil
 }
 
-func dialLDAP(spec configapi.ProviderConfigSpec, password string) (*ldapclient.Client, error) {
-	if spec.Host == "" || spec.Port < 1 || spec.Port > 65535 || spec.BindDN == "" || password == "" {
-		return nil, fmt.Errorf("provider host, port, bind DN and nonempty credentials are required")
+func connectionSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (ConnectionDocument, error) {
+	creds, shared, err := providerSettings(ctx, k, entry)
+	if err != nil {
+		return ConnectionDocument{}, err
 	}
-	scheme := "ldap"
-	if spec.TLS {
-		scheme = "ldaps"
+	data, err := resource.CommonCredentialExtractor(ctx, creds.Source, k, creds.CommonCredentialSelectors)
+	if err != nil {
+		return ConnectionDocument{}, fmt.Errorf("read LDAP credentials: %w", err)
+	}
+	cfg, err := parseConnection(data)
+	if err != nil {
+		return cfg, err
+	}
+	if shared && !*cfg.TLS {
+		return cfg, fmt.Errorf("shared credentials require verified TLS")
+	}
+	return cfg, nil
+}
+func dialLDAP(spec ConnectionDocument) (*ldap.Conn, error) {
+	scheme := "ldaps"
+	if !*spec.TLS {
+		scheme = "ldap"
 	}
 	address := (&url.URL{Scheme: scheme, Host: net.JoinHostPort(spec.Host, strconv.Itoa(spec.Port))}).String()
-	conn, err := ldap.DialURL(address,
-		ldap.DialWithDialer(&net.Dialer{Timeout: ldapTimeout}),
-		ldap.DialWithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: spec.TLSServerName}),
-	)
+	conn, err := ldap.DialURL(address, ldap.DialWithDialer(&net.Dialer{Timeout: ldapTimeout}), ldap.DialWithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: spec.TLSServerName}))
 	if err != nil {
-		return nil, fmt.Errorf("connect to directory: %w", err)
+		return nil, directoryError("connect", err)
 	}
 	conn.SetTimeout(ldapTimeout)
-	if err := conn.Bind(spec.BindDN, password); err != nil {
+	if err := conn.Bind(spec.BindDN, spec.Password); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("bind to directory: %w", err)
+		return nil, directoryError("bind", err)
 	}
-	// Upstream CRUD only needs Conn. Do not call Configure, which mutates global settings and leaks connections.
-	return &ldapclient.Client{Conn: conn}, nil
+	return conn, nil
 }
 
-func setupLDAP(ctx context.Context, k client.Client, mg xpresource.Managed, tracker *xpresource.ProviderConfigUsageTracker) (terraform.Setup, error) {
-	entry, ok := mg.(*entryapi.Entry)
-	if !ok {
-		return terraform.Setup{}, fmt.Errorf("unsupported managed resource")
+// LDAP diagnostics can quote rejected values. Keep credentials out of conditions and events.
+func directoryError(operation string, err error) error {
+	var ldapErr *ldap.Error
+	if errors.As(err, &ldapErr) {
+		return fmt.Errorf("LDAP %s failed (result %d)", operation, ldapErr.ResultCode)
 	}
-	spec, _, err := providerSettings(ctx, k, entry)
-	if err != nil {
-		return terraform.Setup{}, err
-	}
-	if tracker != nil {
-		if err := tracker.Track(ctx, entry); err != nil {
-			return terraform.Setup{}, fmt.Errorf("track provider configuration usage: %w", err)
-		}
-	}
-	secret := &corev1.Secret{}
-	if err := k.Get(ctx, types.NamespacedName{Namespace: spec.CredentialsSecretRef.Namespace, Name: spec.CredentialsSecretRef.Name}, secret); err != nil {
-		return terraform.Setup{}, err
-	}
-	password, ok := secret.Data[spec.CredentialsSecretRef.Key]
-	if !ok || len(password) == 0 {
-		return terraform.Setup{}, fmt.Errorf("provider credential key is missing or empty")
-	}
-	conn, err := dialLDAP(spec, string(password))
-	if err != nil {
-		return terraform.Setup{}, err
-	}
-	return terraform.Setup{Meta: conn, Configuration: map[string]any{}}, nil
+	return fmt.Errorf("LDAP %s failed", operation)
 }

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: ldap.finnes.dev/v1alpha1
+kind: Entry
+metadata:
+  name: service
+  namespace: applications
+spec:
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+  providerConfigRef:
+    kind: ProviderConfig
+    name: directory
+  forProvider:
+    dn: uid=application,ou=services,dc=example,dc=org
+    attributes:
+      cn:
+        - Application
+      sn:
+        - Service
+    additiveAttributes:
+      objectClass:
+        - inetOrgPerson
+    attributeSecretRefs:
+      userPassword:
+        name: application-password
+        key: password

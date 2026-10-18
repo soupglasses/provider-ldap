@@ -1,27 +1,29 @@
 <!--
 SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Development
 
-Use Docker, the Crossplane CLI, kind and the tools in `.mise.toml`.
+Use Docker and the pinned tools in `.mise.toml`.
 
 ```sh
-bash build.sh /tmp/provider-ldap.xpkg
+mise exec -- go test ./cmd/... ./apis/...
+mise exec -- bash build.sh /tmp/provider-ldap.xpkg
 docker build --target tests --tag provider-ldap-tests:development .
-PROVIDER_PACKAGE=/tmp/provider-ldap.xpkg bash kind-test.sh
+mise exec -- env PROVIDER_PACKAGE=/tmp/provider-ldap.xpkg bash kind-test.sh
 ```
 
-CI verifies generated schemas and real OpenLDAP reconciliation, drift, Secret
-rotation, controller restart, observation, retention, adoption and deletion in
-disposable kind. Renovate proposes dependency updates through the same checks.
+Unit tests exercise the native Crossplane connector and LDAP ownership logic.
+[Chainsaw](https://kyverno.github.io/chainsaw/) drives real Kubernetes lifecycle
+operations in disposable kind; ordinary Go tests verify the resulting LDAP state.
+The fixture uses OpenLDAP, restricted Pod Security and synthetic credentials.
 
-Docker's `generated` target exports CRDs and the SDK schema. Copy those outputs
-to `package/crds/` and `config/schema.json` when generation changes. The
-`generated-source` target exports generated Go source with its path manifest.
+Run `generate.sh` after API changes with controller-gen and yamlfmt installed.
+Commit generated deepcopy methods and CRDs. Docker's `generated` target exports
+both, and CI verifies they reproduce the checked-in files. CI also exports Go
+coverage and Chainsaw reports. Renovate updates dependencies through these checks.
 
-Main builds publish commit-qualified packages. Push a new `v*` Git tag for a
-release: CI runs the checks, publishes its native Provider package, and creates
-a GitHub release containing the xpkg and SHA-256 checksum. Existing release tags
-must not be moved.
+Main builds publish commit-qualified packages. Push a new semantic `v*` tag for
+a release: CI checks it, publishes the Provider package, and creates a GitHub
+release with the xpkg and SHA-256 checksum. Do not move published release tags.

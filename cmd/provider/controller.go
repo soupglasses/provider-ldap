@@ -1,114 +1,139 @@
 // SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/ratelimiter"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/providerconfig"
-	xpresource "github.com/crossplane/crossplane-runtime/v2/pkg/resource"
-	tjcontroller "github.com/crossplane/upjet/v2/pkg/controller"
-	"github.com/crossplane/upjet/v2/pkg/controller/handler"
-	"github.com/crossplane/upjet/v2/pkg/metrics"
-	"github.com/crossplane/upjet/v2/pkg/terraform"
-	ldapclient "github.com/l-with/terraform-provider-ldap/client"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
 	configapi "github.com/soupglasses/provider-ldap/apis/namespaced/v1beta1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	crhandler "sigs.k8s.io/controller-runtime/pkg/handler"
+	crevent "sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// LDAP sockets belong to one synchronous reconciliation. The SDK connector has no
-// connection teardown, so close them through Crossplane's external client lifecycle.
 type ldapConnector struct {
-	tracker      *xpresource.ProviderConfigUsageTracker
-	newConnector func(terraform.SetupFn) managed.ExternalConnector
+	kube    client.Client
+	tracker *resource.ProviderConfigUsageTracker
 }
 
-func (c *ldapConnector) Connect(ctx context.Context, mg xpresource.Managed) (managed.ExternalClient, error) {
-	var conn *ldapclient.Client
-	connector := c.newConnector(func(ctx context.Context, k client.Client, mg xpresource.Managed) (terraform.Setup, error) {
-		setup, err := setupLDAP(ctx, k, mg, c.tracker)
-		if err == nil {
-			conn = setup.Meta.(*ldapclient.Client)
+func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (managed.ExternalClient, error) {
+	entry, ok := mg.(*entryapi.Entry)
+	if !ok {
+		return nil, fmt.Errorf("managed resource is not an LDAP Entry")
+	}
+	// Usage records the current reference, even when its backend is missing or unauthorized.
+	if c.tracker != nil {
+		if err := c.tracker.Track(ctx, entry); err != nil {
+			return nil, fmt.Errorf("track provider configuration usage: %w", err)
 		}
-		return setup, err
-	})
-	external, err := connector.Connect(ctx, mg)
-	if err != nil {
-		if conn != nil {
-			conn.Conn.Close()
+	}
+	if entry.GetDeletionTimestamp().IsZero() {
+		if err := validateParameters(entry.Spec.ForProvider); err != nil {
+			return nil, err
 		}
+	} else if _, err := parseDN(entry.Spec.ForProvider.DN); err != nil {
 		return nil, err
 	}
-	return &ldapExternal{ExternalClient: external, conn: conn}, nil
-}
-
-type ldapExternal struct {
-	managed.ExternalClient
-	conn *ldapclient.Client
-}
-
-func (e *ldapExternal) Disconnect(ctx context.Context) error {
-	if e.conn != nil {
-		defer e.conn.Conn.Close()
+	cfg, err := connectionSettings(ctx, c.kube, entry)
+	if err != nil {
+		return nil, err
 	}
-	return e.ExternalClient.Disconnect(ctx)
+	var desired map[string][]string
+	if entry.GetDeletionTimestamp().IsZero() {
+		desired, err = resolveAttributes(ctx, c.kube, entry)
+		if err != nil {
+			return nil, err
+		}
+	}
+	conn, err := dialLDAP(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var additive map[string][]string
+	if entry.GetDeletionTimestamp().IsZero() {
+		additive = entry.Spec.ForProvider.AdditiveAttributes
+	}
+	return &ldapExternal{conn: conn, desired: desired, additive: additive}, nil
 }
 
-func setupEntryController(mgr ctrl.Manager, o tjcontroller.Options) error {
+// The API's immutable DN is authoritative; external-name is only Crossplane's lifecycle identifier.
+type dnInitializer struct{ kube client.Client }
+
+func (i *dnInitializer) Initialize(ctx context.Context, mg resource.Managed) error {
+	entry, ok := mg.(*entryapi.Entry)
+	if !ok {
+		return fmt.Errorf("managed resource is not an LDAP Entry")
+	}
+	if _, err := parseDN(entry.Spec.ForProvider.DN); err != nil {
+		return err
+	}
+	if meta.GetExternalName(entry) == entry.Spec.ForProvider.DN {
+		return nil
+	}
+	meta.SetExternalName(entry, entry.Spec.ForProvider.DN)
+	return i.kube.Update(ctx, entry)
+}
+
+// LDAP Add/Delete are synchronous, and the immutable DN makes creation outcomes safely observable.
+func newEntryReconciler(mgr ctrl.Manager, o controller.Options, extra ...managed.ReconcilerOption) *managed.Reconciler {
 	kind := entryapi.CRDGroupVersion.WithKind("Entry")
 	name := managed.ControllerName(kind.String())
-	metricRecorder := metrics.NewMetricRecorder(kind, mgr, o.PollInterval)
-	eventHandler := handler.NewEventHandler(handler.WithLogger(o.Logger.WithValues("gvk", kind)))
-	connector := &ldapConnector{tracker: xpresource.NewProviderConfigUsageTracker(mgr.GetClient(), &configapi.ProviderConfigUsage{}), newConnector: func(setup terraform.SetupFn) managed.ExternalConnector {
-		return tjcontroller.NewTerraformPluginSDKConnector(mgr.GetClient(), setup, o.Provider.Resources["ldap_entry"], o.OperationTrackerStore,
-			tjcontroller.WithTerraformPluginSDKLogger(o.Logger),
-			tjcontroller.WithTerraformPluginSDKMetricRecorder(metricRecorder),
-			tjcontroller.WithTerraformPluginSDKManagementPolicies(o.Features.Enabled(feature.EnableBetaManagementPolicies)))
-	}}
-	r := managed.NewReconciler(mgr, xpresource.ManagedKind(kind),
-		managed.WithExternalConnector(connector), managed.WithLogger(o.Logger),
-		managed.WithFinalizer(tjcontroller.NewOperationTrackerFinalizer(o.OperationTrackerStore, xpresource.NewAPIFinalizer(mgr.GetClient(), managed.FinalizerName))),
-		managed.WithInitializers(managed.NewNameAsExternalName(mgr.GetClient())),
-		managed.WithTimeout(3*time.Minute), managed.WithPollInterval(o.PollInterval), managed.WithManagementPolicies())
-	return ctrl.NewControllerManagedBy(mgr).Named(name).WithOptions(o.ForControllerRuntime()).
-		WithEventFilter(xpresource.DesiredStateChanged()).Watches(&entryapi.Entry{}, eventHandler).
-		Complete(ratelimiter.NewReconciler(name, r, o.GlobalRateLimiter))
+	options := []managed.ReconcilerOption{
+		managed.WithExternalConnector(&ldapConnector{kube: mgr.GetClient(), tracker: resource.NewProviderConfigUsageTracker(mgr.GetClient(), &configapi.ProviderConfigUsage{})}),
+		managed.WithInitializers(&dnInitializer{kube: mgr.GetClient()}),
+		managed.WithLogger(o.Logger.WithValues("controller", name)),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		managed.WithTimeout(time.Minute), managed.WithPollInterval(o.PollInterval), managed.WithManagementPolicies(),
+		managed.WithCreationGracePeriod(0), managed.WithDeterministicExternalName(true),
+	}
+	return managed.NewReconciler(mgr, resource.ManagedKind(kind), append(options, extra...)...)
 }
 
+// Deletion must enqueue immediately, even when its metadata update does not change generation.
+func entryEventFilter() predicate.Predicate {
+	return predicate.Or(resource.DesiredStateChanged(), predicate.Funcs{UpdateFunc: func(e crevent.UpdateEvent) bool {
+		return e.ObjectOld.GetDeletionTimestamp().IsZero() && !e.ObjectNew.GetDeletionTimestamp().IsZero()
+	}})
+}
+func setupEntryController(mgr ctrl.Manager, o controller.Options) error {
+	name := managed.ControllerName(entryapi.CRDGroupVersion.WithKind("Entry").String())
+	r := newEntryReconciler(mgr, o)
+	return ctrl.NewControllerManagedBy(mgr).Named(name).WithOptions(o.ForControllerRuntime()).WithEventFilter(entryEventFilter()).For(&entryapi.Entry{}).Complete(ratelimiter.NewReconciler(name, r, o.GlobalRateLimiter))
+}
 func setupProviderConfigControllers(mgr ctrl.Manager) error {
 	for _, pc := range []client.Object{&configapi.ProviderConfig{}, &configapi.ClusterProviderConfig{}} {
 		kind := "ProviderConfig"
 		if _, ok := pc.(*configapi.ClusterProviderConfig); ok {
 			kind = "ClusterProviderConfig"
 		}
-		kinds := xpresource.ProviderConfigKinds{
-			Config:    configapi.SchemeBuilder.GroupVersion.WithKind(kind),
-			Usage:     configapi.SchemeBuilder.GroupVersion.WithKind("ProviderConfigUsage"),
-			UsageList: configapi.SchemeBuilder.GroupVersion.WithKind("ProviderConfigUsageList"),
-		}
-		if err := ctrl.NewControllerManagedBy(mgr).Named(providerconfig.ControllerName(kind)).For(pc).
-			Watches(&configapi.ProviderConfigUsage{}, crhandler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
-				usage := obj.(*configapi.ProviderConfigUsage)
-				ref := usage.GetProviderConfigReference()
-				if ref.Kind != kind {
-					return nil
-				}
-				namespace := usage.Namespace
-				if kind == "ClusterProviderConfig" {
-					namespace = ""
-				}
-				return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: namespace, Name: ref.Name}}}
-			})).Complete(providerconfig.NewReconciler(mgr, kinds)); err != nil {
+		kinds := resource.ProviderConfigKinds{Config: configapi.SchemeBuilder.GroupVersion.WithKind(kind), Usage: configapi.SchemeBuilder.GroupVersion.WithKind("ProviderConfigUsage"), UsageList: configapi.SchemeBuilder.GroupVersion.WithKind("ProviderConfigUsageList")}
+		if err := ctrl.NewControllerManagedBy(mgr).Named(providerconfig.ControllerName(kind)).For(pc).Watches(&configapi.ProviderConfigUsage{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+			usage := obj.(*configapi.ProviderConfigUsage)
+			ref := usage.GetProviderConfigReference()
+			if ref.Kind != kind {
+				return nil
+			}
+			namespace := usage.Namespace
+			if kind == "ClusterProviderConfig" {
+				namespace = ""
+			}
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: namespace, Name: ref.Name}}}
+		})).Complete(providerconfig.NewReconciler(mgr, kinds)); err != nil {
 			return err
 		}
 	}

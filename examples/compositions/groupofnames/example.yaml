@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: examples.ldap.finnes.dev/v1alpha1
+kind: GroupOfNames
+metadata:
+  name: application
+  namespace: applications
+spec:
+  cn: application.readers
+  baseDN: ou=groups,dc=example,dc=org
+  backendRef:
+    kind: ProviderConfig
+    name: directory
+  deletionPolicy: Orphan
+  sentinelDN: uid=group-sentinel,ou=services,dc=example,dc=org

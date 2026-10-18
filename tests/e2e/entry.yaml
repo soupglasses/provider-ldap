@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Secret
+metadata:
+  name: directory
+type: Opaque
+stringData:
+  credentials.yaml: |
+    host: ldap.ldap-test.svc
+    port: 1389
+    bindDN: cn=admin,dc=example,dc=test
+    password: disposable-fixture-password
+    tls: false
+---
+apiVersion: ldap.finnes.dev/v1beta1
+kind: ProviderConfig
+metadata:
+  name: directory
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: directory
+      key: credentials.yaml
+      namespace: ldap-test
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: service-password
+type: Opaque
+stringData:
+  password: fixture-password-1
+---
+apiVersion: ldap.finnes.dev/v1alpha1
+kind: Entry
+metadata:
+  name: service
+spec:
+  managementPolicies:
+    - Observe
+    - Create
+    - Update
+  providerConfigRef:
+    kind: ProviderConfig
+    name: directory
+  forProvider:
+    dn: uid=service,ou=users,dc=example,dc=test
+    attributes:
+      objectClass:
+        - inetOrgPerson
+      cn:
+        - Service
+      sn:
+        - Account
+    attributeSecretRefs:
+      userPassword:
+        name: service-password
+        key: password

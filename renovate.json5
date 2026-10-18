@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
@@ -69,5 +69,10 @@
       "depNameTemplate": "jdx/mise",
       "extractVersionTemplate": "^v(?<version>.*)$"
     }
-  ]
+  ],
+  "crossplane": {
+    "managerFilePatterns": [
+      "/^(examples/.*|tests/provider)\\.yaml$/"
+    ]
+  }
 }
