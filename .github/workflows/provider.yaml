@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          version: 2026.10.11
+          version: 2026.10.17
       - name: Build native package and LDAP fixtures
         run: |
           bash build.sh /tmp/provider-ldap-amd64.xpkg linux/amd64
@@ -73,7 +73,7 @@ jobs:
           fetch-depth: 0
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          version: 2026.10.11
+          version: 2026.10.17
           install_args: aqua:crossplane/cli
       - name: Validate release tag
         if: startsWith(github.ref, 'refs/tags/v')
