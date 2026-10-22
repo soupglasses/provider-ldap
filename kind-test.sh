@@ -71,7 +71,7 @@ if ! grep -q 'violates PodSecurity "restricted:v1.34"' "$work_dir/psa-rejection.
     exit 1
 fi
 helm upgrade --install crossplane crossplane --repo https://charts.crossplane.io/stable \
-    --version 2.4.2 --namespace crossplane-system \
+    --version 2.4.3 --namespace crossplane-system \
     --set-json 'securityContextCrossplane={"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}' \
     --set-json 'securityContextRBACManager={"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}' \
     --set 'args[0]=--poll-interval=2s' --wait --timeout 4m
