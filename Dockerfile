@@ -5,7 +5,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN apk add --no-cache bash ca-certificates
 RUN go mod download
-RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1 && go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
+RUN --mount=type=cache,id=provider-ldap-go-build,target=/root/.cache/go-build go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0 && go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
 COPY apis ./apis
 COPY hack ./hack
 COPY generate.sh ./
