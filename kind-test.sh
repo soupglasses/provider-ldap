@@ -33,7 +33,7 @@ cleanup() {
 trap cleanup EXIT
 [[ -s "$package_file" ]]
 kind create cluster --name "$cluster" --kubeconfig "$KUBECONFIG" \
-    --image kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
+    --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 kind load docker-image --name "$cluster" "$tests_image"
 docker run -d --name "$registry" --network kind "$registry_image" >/dev/null
 registry_ip=$(docker inspect "$registry" --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}')
