@@ -18,6 +18,8 @@ cleanup() {
             cat "$work_dir/psa-rejection.log" >&2
         fi
         kubectl get provider,providerrevision -o yaml >&2 || true
+        kubectl get function,functionrevision -o yaml >&2 || true
+        kubectl logs --namespace crossplane-system deployment/crossplane --tail=100 >&2 || true
         kubectl get pods --all-namespaces >&2 || true
         kubectl get entries.ldap.finnes.dev --all-namespaces -o yaml >&2 || true
         kubectl get providerconfigusages.ldap.finnes.dev --all-namespaces -o yaml >&2 || true
