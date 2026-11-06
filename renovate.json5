@@ -56,23 +56,28 @@
       "datasourceTemplate": "helm",
       "depNameTemplate": "crossplane",
       "registryUrlTemplate": "https://charts.crossplane.io/stable"
-    },
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^\\.github/workflows/provider\\.yaml$/"
-      ],
-      "matchStrings": [
-        "version: (?<currentValue>[0-9]{4}\\.[0-9]+\\.[0-9]+)"
-      ],
-      "datasourceTemplate": "github-releases",
-      "depNameTemplate": "jdx/mise",
-      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ],
   "crossplane": {
     "managerFilePatterns": [
       "/^(examples/.*|tests/provider)\\.yaml$/"
+    ]
+  },
+  "timezone": "Europe/Copenhagen",
+  "schedule": [
+    "* * * * 1"
+  ],
+  "updateNotScheduled": false,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": [
+      "at any time"
+    ],
+    "minimumReleaseAge": null
+  },
+  "lockFileMaintenance": {
+    "schedule": [
+      "* * * * 1"
     ]
   }
 }
