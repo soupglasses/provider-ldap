@@ -31,7 +31,7 @@ COPY --from=generate /src/apis /apis
 FROM scratch AS coverage
 COPY --from=unit-tests /out/coverage.out /coverage.out
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS runtime
+FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a AS runtime
 LABEL org.opencontainers.image.source="https://github.com/soupglasses/provider-ldap"
 COPY --from=generate /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/provider /provider
@@ -40,7 +40,7 @@ COPY LICENSES/ /licenses/
 USER 65532:65532
 ENTRYPOINT ["/provider"]
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS tests
+FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a AS tests
 RUN apk add --no-cache openldap openldap-back-mdb openldap-clients
 COPY --from=tests-build /out/check /tests/check
 USER 65532:65532
