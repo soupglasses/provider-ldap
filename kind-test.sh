@@ -8,7 +8,7 @@ work_dir=$(mktemp -d)
 export KUBECONFIG="$work_dir/kubeconfig"
 package_file=${PROVIDER_PACKAGE:-/tmp/provider-ldap.xpkg}
 registry="${cluster}-registry"
-registry_image=registry:3.1.2@sha256:d4032d4cc323c1731c707931ecada07a53076eac38e3b61ae57533f170f2c6c3
+registry_image=registry:3.1.2@sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
 tests_image=${TESTS_IMAGE:-provider-ldap-tests:development}
 cleanup() {
     result=$?
