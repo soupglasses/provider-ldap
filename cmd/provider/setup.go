@@ -90,48 +90,49 @@ func validateEntryDN(raw, namespace string, bases []string) error {
 }
 
 // providerSettings authorizes the reference before any credentials are retrieved.
-func providerSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (configapi.ProviderCredentials, bool, error) {
+func providerSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (configapi.ProviderCredentials, identityScope, error) {
+	scope := identityScope{namespace: entry.Namespace}
 	if _, err := parseDN(entry.Spec.ForProvider.DN); err != nil {
-		return configapi.ProviderCredentials{}, false, err
+		return configapi.ProviderCredentials{}, scope, err
 	}
 	ref := entry.GetProviderConfigReference()
 	if ref == nil || ref.Name == "" {
-		return configapi.ProviderCredentials{}, false, fmt.Errorf("a provider configuration reference is required")
+		return configapi.ProviderCredentials{}, scope, fmt.Errorf("a provider configuration reference is required")
 	}
 	var creds configapi.ProviderCredentials
-	shared := false
 	switch ref.Kind {
 	case "ProviderConfig":
 		pc := &configapi.ProviderConfig{}
 		if err := k.Get(ctx, types.NamespacedName{Namespace: entry.Namespace, Name: ref.Name}, pc); err != nil {
-			return creds, false, err
+			return creds, scope, err
 		}
 		creds = pc.Spec.Credentials
 		if creds.SecretRef == nil || (creds.SecretRef.Namespace != "" && creds.SecretRef.Namespace != entry.Namespace) {
-			return creds, false, fmt.Errorf("namespaced provider credentials must remain in the entry namespace")
+			return creds, scope, fmt.Errorf("namespaced provider credentials must remain in the entry namespace")
 		}
 		copy := *creds.SecretRef
 		copy.Namespace = entry.Namespace
 		creds.SecretRef = &copy
 	case "ClusterProviderConfig":
-		shared = true
 		pc := &configapi.ClusterProviderConfig{}
 		if err := k.Get(ctx, types.NamespacedName{Name: ref.Name}, pc); err != nil {
-			return creds, false, err
+			return creds, scope, err
 		}
+		scope.shared = true
+		scope.bases = pc.Spec.AllowedBases
 		selector, err := metav1.LabelSelectorAsSelector(pc.Spec.NamespaceSelector)
 		if pc.Spec.NamespaceSelector == nil || err != nil || selector.Empty() {
-			return creds, false, fmt.Errorf("cluster provider requires a valid nonempty namespace selector")
+			return creds, scope, fmt.Errorf("cluster provider requires a valid nonempty namespace selector")
 		}
 		namespace := &corev1.Namespace{}
 		if err := k.Get(ctx, types.NamespacedName{Name: entry.Namespace}, namespace); err != nil {
-			return creds, false, err
+			return creds, scope, err
 		}
 		if !selector.Matches(labels.Set(namespace.Labels)) {
-			return creds, false, fmt.Errorf("entry namespace is not authorized by the directory backend")
+			return creds, scope, fmt.Errorf("entry namespace is not authorized by the directory backend")
 		}
-		if err := validateEntryDN(entry.Spec.ForProvider.DN, entry.Namespace, pc.Spec.AllowedBases); err != nil {
-			return creds, false, err
+		if err := scope.authorize(entry.Spec.ForProvider.DN); err != nil {
+			return creds, scope, err
 		}
 		for _, source := range []string{meta.GetExternalName(entry), entry.Status.AtProvider.DN} {
 			if source == "" {
@@ -140,40 +141,40 @@ func providerSettings(ctx context.Context, k client.Client, entry *entryapi.Entr
 			if _, err := identityUUID(source); err == nil {
 				continue
 			}
-			if err := validateEntryDN(source, entry.Namespace, pc.Spec.AllowedBases); err != nil {
-				return creds, false, err
+			if err := scope.authorize(source); err != nil {
+				return creds, scope, err
 			}
 		}
 		creds = pc.Spec.Credentials
 		if creds.SecretRef == nil || creds.SecretRef.Namespace == "" {
-			return creds, false, fmt.Errorf("shared credentials require an explicit Secret namespace")
+			return creds, scope, fmt.Errorf("shared credentials require an explicit Secret namespace")
 		}
 	default:
-		return creds, false, fmt.Errorf("unsupported provider configuration kind")
+		return creds, scope, fmt.Errorf("unsupported provider configuration kind")
 	}
 	if creds.Source != xpv2.CredentialsSourceSecret || creds.SecretRef == nil || creds.SecretRef.Name == "" || creds.SecretRef.Key == "" || creds.Env != nil || creds.Fs != nil {
-		return creds, false, fmt.Errorf("provider credentials require source Secret and a complete secretRef")
+		return creds, scope, fmt.Errorf("provider credentials require source Secret and a complete secretRef")
 	}
-	return creds, shared, nil
+	return creds, scope, nil
 }
 
-func connectionSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (ConnectionDocument, error) {
-	creds, shared, err := providerSettings(ctx, k, entry)
+func connectionSettings(ctx context.Context, k client.Client, entry *entryapi.Entry) (ConnectionDocument, identityScope, error) {
+	creds, scope, err := providerSettings(ctx, k, entry)
 	if err != nil {
-		return ConnectionDocument{}, err
+		return ConnectionDocument{}, scope, err
 	}
 	data, err := resource.CommonCredentialExtractor(ctx, creds.Source, k, creds.CommonCredentialSelectors)
 	if err != nil {
-		return ConnectionDocument{}, fmt.Errorf("read LDAP credentials: %w", err)
+		return ConnectionDocument{}, scope, fmt.Errorf("read LDAP credentials: %w", err)
 	}
 	cfg, err := parseConnection(data)
 	if err != nil {
-		return cfg, err
+		return cfg, scope, err
 	}
-	if shared && !*cfg.TLS {
-		return cfg, fmt.Errorf("shared credentials require verified TLS")
+	if scope.shared && !*cfg.TLS {
+		return cfg, scope, fmt.Errorf("shared credentials require verified TLS")
 	}
-	return cfg, nil
+	return cfg, scope, nil
 }
 func dialLDAP(ctx context.Context, spec ConnectionDocument) (*ldap.Conn, error) {
 	if err := ctx.Err(); err != nil {

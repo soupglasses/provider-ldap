@@ -49,7 +49,7 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 	} else if _, err := parseDN(entry.Spec.ForProvider.DN); err != nil {
 		return nil, err
 	}
-	cfg, err := connectionSettings(ctx, c.kube, entry)
+	cfg, scope, err := connectionSettings(ctx, c.kube, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -61,10 +61,6 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 			return nil, err
 		}
 	}
-	scope, err := identityScopeFor(ctx, c.kube, entry)
-	if err != nil {
-		return nil, err
-	}
 	conn, err := dialLDAP(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -74,10 +70,7 @@ func (c *ldapConnector) Connect(ctx context.Context, mg resource.Managed) (manag
 		shared = entry.Spec.ForProvider.SharedAttributes
 	}
 	external := &ldapExternal{conn: conn, desired: desired, shared: shared, secretVersions: versions, kube: c.kube, identity: &entryIdentity{kube: c.kube, scope: scope}}
-	if _, err := external.refreshIdentity(ctx, entry); err != nil {
-		external.Disconnect(ctx)
-		return nil, err
-	}
+	external.cancelOnContext(ctx)
 	if entry.GetDeletionTimestamp().IsZero() {
 		if err := external.loadSchema(ctx, entry.Spec.ForProvider.DN); err != nil {
 			external.Disconnect(ctx)

@@ -5,14 +5,18 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
 	"github.com/go-ldap/ldap/v3"
+	configapi "github.com/soupglasses/provider-ldap/apis/namespaced/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestSchemaCanonicalRDNPolicies(t *testing.T) {
@@ -110,19 +114,23 @@ func TestCancellationClosesBoundLDAPConnection(t *testing.T) {
 		data := make([]byte, 1)
 		_, _ = socket.Read(data)
 	}()
-	_, port, _ := net.SplitHostPort(listener.Addr().String())
-	number, _ := strconv.Atoi(port)
-	tls := false
-	ctx, cancel := context.WithCancel(context.Background())
+	port := listener.Addr().(*net.TCPAddr).Port
+	pc := &configapi.ProviderConfig{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Name: "fixture"}, Spec: configapi.ProviderConfigSpec{Credentials: credentials("media")}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "media", Name: "credentials"}, Data: map[string][]byte{
+		"connection.yaml": fmt.Appendf(nil, "host: 127.0.0.1\nport: %d\nbindDN: cn=admin\npassword: synthetic\ntls: false\n", port),
+	}}
+	connector := &ldapConnector{kube: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, secret).Build()}
+	entry := testEntry("ProviderConfig", "fixture")
+	// A deleting Entry skips schema discovery. Its first search belongs to Observe.
+	now := metav1.Now()
+	entry.SetDeletionTimestamp(&now)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := dialLDAP(ctx, ConnectionDocument{Host: "127.0.0.1", Port: number, BindDN: "cn=admin", Password: "synthetic", TLS: &tls})
+	external, err := connector.Connect(ctx, entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	external := &ldapExternal{conn: conn}
-	external.cancelOnContext(ctx)
 	defer external.Disconnect(context.Background())
-	entry := testEntry("ProviderConfig", "fixture")
 	done := make(chan error, 1)
 	go func() { _, err := external.Observe(ctx, entry); done <- err }()
 	select {

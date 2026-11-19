@@ -11,8 +11,6 @@ import (
 	"github.com/go-ldap/ldap/v3"
 	"github.com/google/uuid"
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
-	configapi "github.com/soupglasses/provider-ldap/apis/namespaced/v1beta1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -34,22 +32,6 @@ type identityScope struct {
 	shared    bool
 }
 
-func identityScopeFor(ctx context.Context, k client.Client, entry *entryapi.Entry) (identityScope, error) {
-	scope := identityScope{namespace: entry.Namespace}
-	ref := entry.GetProviderConfigReference()
-	if ref == nil {
-		return scope, fmt.Errorf("a provider configuration reference is required")
-	}
-	if ref.Kind == "ClusterProviderConfig" {
-		pc := &configapi.ClusterProviderConfig{}
-		if err := k.Get(ctx, types.NamespacedName{Name: ref.Name}, pc); err != nil {
-			return scope, err
-		}
-		scope.shared = true
-		scope.bases = append([]string{}, pc.Spec.AllowedBases...)
-	}
-	return scope, nil
-}
 func (s identityScope) authorize(dn string) error {
 	if s.shared {
 		return validateEntryDN(dn, s.namespace, s.bases)

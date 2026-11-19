@@ -112,12 +112,12 @@ func TestClusterProviderAuthorization(t *testing.T) {
 			kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, ns).Build()
 			entry := testEntry("ClusterProviderConfig", "shared")
 			entry.Spec.ForProvider.DN = tc.dn
-			_, shared, err := providerSettings(context.Background(), kube, entry)
+			_, scope, err := providerSettings(context.Background(), kube, entry)
 			if (err == nil) != tc.allowed {
 				t.Fatalf("allowed=%v error=%v", tc.allowed, err)
 			}
-			if tc.allowed && !shared {
-				t.Fatal("lost shared configuration boundary")
+			if tc.allowed && (!scope.shared || scope.authorize(tc.dn) != nil || scope.authorize("uid=media.service,ou=other,dc=example,dc=test") == nil) {
+				t.Fatal("identity lookup lost the authorized directory scope")
 			}
 		})
 	}
@@ -127,7 +127,7 @@ func TestSharedCredentialsRequireTLS(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "media", Labels: map[string]string{"directory": "shared"}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "platform"}, Data: map[string][]byte{"connection.yaml": []byte("host: localhost\nbindDN: cn=admin\npassword: secret\ntls: false\n")}}
 	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pc, ns, secret).Build()
-	if _, err := connectionSettings(context.Background(), kube, testEntry("ClusterProviderConfig", "shared")); err == nil {
+	if _, _, err := connectionSettings(context.Background(), kube, testEntry("ClusterProviderConfig", "shared")); err == nil {
 		t.Fatal("shared plaintext connection accepted")
 	}
 }
@@ -200,7 +200,7 @@ func TestSharedSourceAuthorizationPrecedesCredentialReads(t *testing.T) {
 				meta.SetExternalName(entry, identityA)
 				entry.Status.AtProvider.DN = foreign
 			}
-			_, err := connectionSettings(context.Background(), kube, entry)
+			_, _, err := connectionSettings(context.Background(), kube, entry)
 			if err == nil || strings.Contains(err.Error(), "credentials") || strings.Contains(err.Error(), "not found") {
 				t.Fatalf("foreign source did not fail before missing credential lookup: %v", err)
 			}

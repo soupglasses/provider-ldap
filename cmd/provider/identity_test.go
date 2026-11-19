@@ -258,9 +258,21 @@ func TestIdentityCreateIntentSurvivesRestartAndRejectsForeignReplacement(t *test
 }
 func TestIdentityDeletionWithPendingRenamePreservesForeignTarget(t *testing.T) {
 	external, entry, directory := identityFixture(t, identityA, identityNewDN, identityRecord(identityOldDN, identityA), identityRecord(identityNewDN, identityB))
-	entry.Status.AtProvider.DN = identityOldDN
-	if _, err := external.refreshIdentity(context.Background(), entry); err != nil {
-		t.Fatal(err)
+	// The original entry was moved externally. The desired DN now belongs to another UUID.
+	now := metav1.Now()
+	entry.SetDeletionTimestamp(&now)
+	observation, err := external.Observe(context.Background(), entry)
+	if err != nil || !observation.ResourceExists || entry.Status.AtProvider.DN != identityOldDN {
+		t.Fatalf("observation failed to locate the moved entry: %+v, %v", observation, err)
+	}
+	subtreeSearches := 0
+	for _, search := range directory.searches {
+		if search.Scope == ldap.ScopeWholeSubtree {
+			subtreeSearches++
+		}
+	}
+	if subtreeSearches != 1 {
+		t.Fatalf("searched the naming context %d times, want once", subtreeSearches)
 	}
 	if _, err := external.Delete(context.Background(), entry); err != nil {
 		t.Fatal(err)
@@ -286,8 +298,10 @@ func TestIdentityMetadataFailureAndSourceAuthorizationBlockWrites(t *testing.T) 
 }
 func TestIdentityRejectsReplacementBetweenResolveAndDelete(t *testing.T) {
 	external, entry, directory := identityFixture(t, identityA, identityOldDN, identityRecord(identityOldDN, identityA))
-	if _, err := external.refreshIdentity(context.Background(), entry); err != nil {
-		t.Fatal(err)
+	now := metav1.Now()
+	entry.SetDeletionTimestamp(&now)
+	if observation, err := external.Observe(context.Background(), entry); err != nil || !observation.ResourceExists {
+		t.Fatalf("observe: %+v, %v", observation, err)
 	}
 	directory.records[identityOldDN] = identityRecord(identityOldDN, identityB)
 	if _, err := external.Delete(context.Background(), entry); err == nil {
