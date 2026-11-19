@@ -88,6 +88,14 @@ That key contains YAML or JSON with `host`, `port` (default 636), `bindDN`,
 `password`, `tls` (default true), and optional `tlsServerName`.
 Namespaced configurations read local Secrets only.
 
+For shared configurations, the provider reads the Entry namespace to evaluate
+its labels. The [runtime example](../tests/provider.yaml) sets
+`spec.serviceAccountTemplate.metadata.name` to `ldap-provider` and selects that
+DeploymentRuntimeConfig through the Provider's `spec.runtimeConfigRef`.
+Apply the [namespace reader role and binding](../examples/shared-config-rbac.yaml).
+The binding grants only `get` on namespaces to `crossplane-system/ldap-provider`.
+Adjust the subject if your runtime uses a different name or namespace.
+
 `ClusterProviderConfig` additionally requires a nonempty `namespaceSelector`,
 explicit credential Secret namespace, TLS, and `allowedBases`. Each entry must
 be a direct child of an allowed base, with first RDN value starting

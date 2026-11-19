@@ -77,8 +77,19 @@ helm upgrade --install crossplane crossplane --repo https://charts.crossplane.io
     --set-json 'securityContextCrossplane={"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}' \
     --set-json 'securityContextRBACManager={"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}' \
     --set 'args[0]=--poll-interval=2s' --wait --timeout 4m
+# Only the disposable directory gets the private key; the provider trusts its public certificate.
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=ldap.ldap-test.svc \
+    -addext 'subjectAltName=DNS:ldap.ldap-test.svc' \
+    -keyout "$work_dir/tls.key" -out "$work_dir/tls.crt"
+kubectl create secret tls ldap-server-tls -n ldap-test --cert="$work_dir/tls.crt" --key="$work_dir/tls.key"
+kubectl create configmap ldap-test-trust -n crossplane-system --from-file=fixture.pem="$work_dir/tls.crt"
+kubectl apply -f "$repo_dir/examples/shared-config-rbac.yaml"
 cp "$repo_dir/tests/provider.yaml" "$work_dir/provider.yaml"
 REGISTRY_ADDRESS="$registry_address" yq -i '(select(.kind == "Provider") | .spec.package) = strenv(REGISTRY_ADDRESS) + "/provider-ldap:development" | (select(.kind == "DeploymentRuntimeConfig" and .metadata.name == "ldap") | .spec.deploymentTemplate.spec.template.spec.containers[0].args) = ["--poll-interval=2s"]' "$work_dir/provider.yaml"
+yq -i '(select(.kind == "DeploymentRuntimeConfig") | .spec.deploymentTemplate.spec.template.spec) |=
+    (.volumes += [{"name":"ldap-test-trust","configMap":{"name":"ldap-test-trust"}}] |
+     (.containers[] | select(.name == "package-runtime") | .volumeMounts) +=
+        [{"name":"ldap-test-trust","mountPath":"/etc/ssl/certs/fixture.pem","subPath":"fixture.pem","readOnly":true}])' "$work_dir/provider.yaml"
 kubectl apply --filename "$work_dir/provider.yaml"
 kubectl wait provider/ldap --for=condition=Healthy --timeout=180s
 kubectl wait crd/entries.ldap.finnes.dev --for=condition=Established --timeout=90s

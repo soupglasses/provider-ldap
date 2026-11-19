@@ -42,6 +42,26 @@ spec:
               - disposable-fixture-password
               - -f
               - /fixtures/base.ldif
+    - name: reconcile-through-shared-config
+      try:
+        - apply:
+            file: shared-config.yaml
+        - assert:
+            resource:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              metadata:
+                name: shared-user
+              status:
+                atProvider:
+                  dn: uid=ldap-test.shared,ou=users,dc=example,dc=test
+                (conditions[?type == 'Ready'].status | [0]): "True"
+                (conditions[?type == 'Synced'].status | [0]): "True"
+        - delete:
+            ref:
+              apiVersion: ldap.finnes.dev/v1alpha1
+              kind: Entry
+              name: shared-user
     - name: create
       try:
         - apply:

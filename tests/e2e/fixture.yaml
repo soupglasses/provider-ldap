@@ -13,6 +13,8 @@ data:
     moduleload back_mdb
     pidfile /tmp/slapd.pid
     argsfile /tmp/slapd.args
+    TLSCertificateFile /tls/tls.crt
+    TLSCertificateKeyFile /tls/tls.key
     database mdb
     maxsize 10485760
     suffix "dc=example,dc=test"
@@ -96,10 +98,12 @@ spec:
           command:
             - sh
             - -ec
-            - ulimit -n 1024; mkdir -p /tmp/database; exec slapd -f /fixtures/slapd.conf -h ldap://0.0.0.0:1389 -d 0
+            - ulimit -n 1024; mkdir -p /tmp/database; exec slapd -f /fixtures/slapd.conf -h "ldap://0.0.0.0:1389 ldaps://0.0.0.0:1636" -d 0
           ports:
             - name: ldap
               containerPort: 1389
+            - name: ldaps
+              containerPort: 1636
           readinessProbe:
             tcpSocket:
               port: ldap
@@ -116,12 +120,18 @@ spec:
             limits:
               memory: 256Mi
           volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
             - name: temporary
               mountPath: /tmp
             - name: fixtures
               mountPath: /fixtures
               readOnly: true
       volumes:
+        - name: tls
+          secret:
+            secretName: ldap-server-tls
         - name: temporary
           emptyDir: {}
         - name: fixtures
@@ -139,3 +149,6 @@ spec:
     - name: ldap
       port: 1389
       targetPort: ldap
+    - name: ldaps
+      port: 1636
+      targetPort: ldaps

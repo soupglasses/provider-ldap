@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 Sofie Finnes <sofie+git@finnes.dev>
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shared-directory
+  namespace: crossplane-system
+stringData:
+  credentials.yaml: |
+    host: ldap.ldap-test.svc
+    port: 1636
+    bindDN: cn=admin,dc=example,dc=test
+    password: disposable-fixture-password
+    tls: true
+---
+apiVersion: ldap.finnes.dev/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: shared-directory
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ldap-test
+  allowedBases:
+    - ou=users,dc=example,dc=test
+  credentials:
+    source: Secret
+    secretRef:
+      name: shared-directory
+      key: credentials.yaml
+      namespace: crossplane-system
+---
+apiVersion: ldap.finnes.dev/v1alpha1
+kind: Entry
+metadata:
+  name: shared-user
+spec:
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: shared-directory
+  forProvider:
+    dn: uid=ldap-test.shared,ou=users,dc=example,dc=test
+    attributes:
+      objectClass: [inetOrgPerson]
+      cn: [Shared]
+      sn: [Account]
