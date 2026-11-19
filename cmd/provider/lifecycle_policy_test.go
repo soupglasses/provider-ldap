@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,15 +73,37 @@ func matchedValueFixture(t *testing.T, conn *fixtureLDAP) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertion := packet.Children[0]
-		key := string(assertion.Children[0].Data.Bytes())
-		value := string(assertion.Children[1].Data.Bytes())
-		result := ldap.NewEntry(conn.entry.DN, map[string][]string{})
-		for _, current := range attributeValues(conn.entry, key) {
-			if strings.EqualFold(current, value) {
-				result.Attributes = append(result.Attributes, &ldap.EntryAttribute{Name: key, Values: []string{current}})
+		key := request.Attributes[0]
+		if request.Filter != "(objectClass=*)" {
+			guard, err := ldap.CompileFilter(request.Filter)
+			if err != nil || guard.Tag != ldap.FilterAnd || len(guard.Children) == 0 {
+				t.Fatalf("invalid guarded entry filter %q", request.Filter)
+			}
+			for _, assertion := range guard.Children {
+				if assertion.Tag != ldap.FilterEqualityMatch {
+					t.Fatalf("expected equality guard in %q", request.Filter)
+				}
+				name := string(assertion.Children[0].Data.Bytes())
+				value := string(assertion.Children[1].Data.Bytes())
+				if !slices.ContainsFunc(attributeValues(conn.entry, name), func(stored string) bool {
+					return strings.EqualFold(stored, value)
+				}) {
+					return &ldap.SearchResult{}, nil
+				}
 			}
 		}
+		var values []string
+		for _, current := range attributeValues(conn.entry, key) {
+			for _, assertion := range packet.Children {
+				attribute := string(assertion.Children[0].Data.Bytes())
+				value := string(assertion.Children[1].Data.Bytes())
+				if attribute == key && strings.EqualFold(current, value) {
+					values = append(values, current)
+					break
+				}
+			}
+		}
+		result := ldap.NewEntry(conn.entry.DN, map[string][]string{key: values})
 		return &ldap.SearchResult{Entries: []*ldap.Entry{result}}, nil
 	}
 }

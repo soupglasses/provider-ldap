@@ -40,8 +40,12 @@ adopting existing configuration: historical ownership cannot be inferred.
 A key cannot overlap the maps, including aliases and case variants. Secret
 references must resolve locally. Secret-backed attributes always use exact
 ownership.
-Attribute changes use one atomic LDAP Modify. A DN change and an attribute update
-are separate operations; readiness requires both to be observed as converged.
+Attribute changes use one atomic LDAP Modify. Shared attributes use individual
+value additions and deletions, so concurrent changes to unrelated members survive.
+Exact ownership lets the provider replace the entire declared attribute, including
+values another writer added. A UUID assertion protects a bound entry from writes
+intended for a previous occupant of its DN. A DN change and an attribute update
+are separate operations, and readiness requires both to be observed as converged.
 
 Secret changes reconcile continuously; referenced values are never copied to
 status. `status.atProvider.observedGeneration` and `observedSecretVersions`

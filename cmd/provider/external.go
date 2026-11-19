@@ -241,19 +241,26 @@ func (e *ldapExternal) hasValue(ctx context.Context, observed *ldap.Entry, key, 
 	}
 	return same, nil
 }
-func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry, entry *entryapi.Entry) (bool, error) {
-	for key, want := range e.desired {
-		if len(attributeValues(observed, key)) != len(want) {
+func (e *ldapExternal) exactValuesMatch(ctx context.Context, observed *ldap.Entry, key string, want []string) (bool, error) {
+	if len(attributeValues(observed, key)) != len(want) {
+		return false, nil
+	}
+	for _, value := range want {
+		same, err := e.hasValue(ctx, observed, key, value)
+		if err != nil {
+			return false, err
+		}
+		if !same {
 			return false, nil
 		}
-		for _, value := range want {
-			same, err := e.hasValue(ctx, observed, key, value)
-			if err != nil {
-				return false, err
-			}
-			if !same {
-				return false, nil
-			}
+	}
+	return true, nil
+}
+func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry, entry *entryapi.Entry) (bool, error) {
+	for key, want := range e.desired {
+		same, err := e.exactValuesMatch(ctx, observed, key, want)
+		if err != nil || !same {
+			return false, err
 		}
 	}
 	for key, want := range e.shared {
@@ -267,7 +274,7 @@ func (e *ldapExternal) upToDate(ctx context.Context, observed *ldap.Entry, entry
 			}
 		}
 	}
-	retired, err := e.retiredValues(ctx, observed.DN, entry)
+	retired, err := e.retiredValues(ctx, observed, entry)
 	if err != nil {
 		return false, err
 	}
@@ -407,24 +414,15 @@ func (e *ldapExternal) planModify(ctx context.Context, dn string, observed *ldap
 	}
 	for _, key := range keys(e.desired) {
 		want := e.desired[key]
-		same := len(attributeValues(observed, key)) == len(want)
-		if same {
-			for _, value := range want {
-				equal, err := e.hasValue(ctx, observed, key, value)
-				if err != nil {
-					return nil, err
-				}
-				if !equal {
-					same = false
-					break
-				}
-			}
+		same, err := e.exactValuesMatch(ctx, observed, key, want)
+		if err != nil {
+			return nil, err
 		}
 		if !same {
 			request.Replace(key, want)
 		}
 	}
-	retired, err := e.retiredValues(ctx, dn, entry)
+	retired, err := e.retiredValues(ctx, observed, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +451,9 @@ func (e *ldapExternal) Update(ctx context.Context, mg resource.Managed) (managed
 			return managed.ExternalUpdate{}, fmt.Errorf("LDAP entry disappeared before update")
 		}
 		request, err := e.planModify(ctx, e.actualDN(entry), observed, entry)
+		if errors.Is(err, errRetirementChanged) {
+			continue
+		}
 		if err != nil {
 			return managed.ExternalUpdate{}, err
 		}

@@ -4,9 +4,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 	xpv2 "github.com/crossplane/crossplane/apis/v2/core/v2"
 	"github.com/go-ldap/ldap/v3"
 	entryapi "github.com/soupglasses/provider-ldap/apis/namespaced/ldap/v1alpha1"
@@ -254,5 +258,145 @@ func TestSharedReplacementIsAtomicAndPreservesConcurrentValues(t *testing.T) {
 	}
 	if len(conn.changes) != 1 || len(conn.changes[0].Changes) != 3 {
 		t.Fatal("shared add, owned retirement, and exact replace were not one atomic LDAP Modify")
+	}
+}
+
+func TestSubsetRetirementBatchesLargeGroup(t *testing.T) {
+	const count = 130
+	var kept, removed []string
+	for i := range count {
+		kept = append(kept, fmt.Sprintf("uid=kept-%d,dc=example", i))
+		removed = append(removed, fmt.Sprintf("uid=removed-%d,dc=example", i))
+	}
+	claims := slices.Concat(kept, removed)
+	external, entry, conn := subsetFixture(t, claims)
+	ctx := context.Background()
+	if _, err := external.Observe(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	// The final retained members also match old claims under directory equality.
+	desired := slices.Clone(kept)
+	desired[count-1] = strings.ToUpper(desired[count-1])
+	desired[count-2] = strings.ToUpper(desired[count-2])
+	updateSubsetSpec(t, external, entry, desired, false)
+	conn.compareFn = func(_ string, key, value string) (bool, error) {
+		return slices.ContainsFunc(attributeValues(conn.entry, key), func(stored string) bool {
+			return strings.EqualFold(stored, value)
+		}), nil
+	}
+	search := conn.searchFn
+	searches := 0
+	conn.searchFn = func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+		if len(req.Controls) != 0 {
+			searches++
+		}
+		return search(req)
+	}
+	if _, err := external.Update(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	if searches > 6 {
+		t.Fatalf("got %d matched-value searches for 130 desired values and 132 retiring claims, want at most 6", searches)
+	}
+	got := slices.Clone(attributeValues(conn.entry, "member"))
+	want := slices.Concat(kept, []string{"human"})
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected group after retirement: %v", got)
+	}
+}
+
+func TestSubsetRetirementRetriesChangedSpellingAndPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		rewriteAtCandidate bool
+		temporary          []string
+	}{
+		{name: "candidate changed spelling", rewriteAtCandidate: true, temporary: []string{"Member", "removed"}},
+		{name: "protected changed spelling", temporary: []string{"Member", "removed"}},
+		{name: "protected temporarily absent", temporary: []string{"removed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			external, entry, conn := subsetFixture(t, []string{"member", "removed"})
+			if _, err := external.Observe(ctx, entry); err != nil {
+				t.Fatal(err)
+			}
+			updateSubsetSpec(t, external, entry, []string{"MEMBER"}, false)
+			conn.compareFn = func(_ string, key, value string) (bool, error) {
+				return slices.ContainsFunc(attributeValues(conn.entry, key), func(stored string) bool {
+					return strings.EqualFold(stored, value)
+				}), nil
+			}
+			search := conn.searchFn
+			changed, observations := false, 0
+			conn.searchFn = func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+				if len(req.Controls) == 0 {
+					observations++
+				} else if !changed && (req.Filter == "(objectClass=*)") == tc.rewriteAtCandidate {
+					changed = true
+					initial := conn.entry
+					conn.entry = ldap.NewEntry(initial.DN, map[string][]string{"member": tc.temporary})
+					defer func() { conn.entry = initial }()
+				}
+				return search(req)
+			}
+			conn.beforeModify = func() {
+				if !changed || observations < 2 {
+					t.Fatal("directory update used stale ownership evidence")
+				}
+			}
+			if _, err := external.Update(ctx, entry); err != nil {
+				t.Fatal(err)
+			}
+			got := attributeValues(conn.entry, "member")
+			if !slices.Contains(got, "member") || !slices.Contains(got, "human") || slices.Contains(got, "removed") {
+				t.Fatalf("unexpected group after concurrent change: %v", got)
+			}
+		})
+	}
+}
+
+func TestSubsetObserveKeepsClaimsAcrossConcurrentChanges(t *testing.T) {
+	for _, change := range []string{"member removed", "entry removed", "entry replaced"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			external, entry, conn := subsetFixture(t, []string{"member"})
+			if _, err := external.Observe(ctx, entry); err != nil {
+				t.Fatal(err)
+			}
+			updateSubsetSpec(t, external, entry, nil, true)
+			if change == "entry replaced" {
+				external.identity = &entryIdentity{}
+				meta.SetExternalName(entry, identityA)
+				conn.entry.Attributes = append(conn.entry.Attributes, &ldap.EntryAttribute{Name: "entryUUID", Values: []string{identityA}})
+			}
+			search := conn.searchFn
+			conn.searchFn = func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+				if len(req.Controls) == 0 {
+					return search(req)
+				}
+				if change == "entry removed" {
+					return nil, ldap.NewError(ldap.LDAPResultNoSuchObject, errors.New("gone"))
+				}
+				attrs := map[string][]string{}
+				if change == "entry replaced" {
+					attrs["entryUUID"] = []string{identityB}
+					attrs["member"] = []string{"member"}
+				}
+				original := conn.entry
+				conn.entry = ldap.NewEntry(original.DN, attrs)
+				defer func() { conn.entry = original }()
+				return search(req)
+			}
+			observation, err := external.Observe(ctx, entry)
+			if !errors.Is(err, errRetirementChanged) || observation.ResourceUpToDate {
+				t.Fatalf("expected a new observation after %s, got %+v, %v", change, observation, err)
+			}
+			if !slices.Contains(entry.Status.OwnedAttributeValues["member"], "member") {
+				t.Fatal("inconsistent directory reads released ownership")
+			}
+		})
 	}
 }
