@@ -6,42 +6,14 @@ metadata:
   name: ldap-lifecycle
 spec:
   namespace: ldap-test
+  # The cluster is disposable; deleting credentials before failed Entries can strand finalizers.
+  skipDelete: true
   timeouts:
     assert: 60s
     error: 60s
     exec: 180s
     cleanup: 60s
   steps:
-    - name: directory-fixture
-      try:
-        - apply:
-            file: fixture.yaml
-        - assert:
-            resource:
-              apiVersion: apps/v1
-              kind: Deployment
-              metadata:
-                name: ldap
-              status:
-                availableReplicas: 1
-        - command:
-            entrypoint: kubectl
-            args:
-              - exec
-              - --namespace
-              - ldap-test
-              - deployment/ldap
-              - --
-              - ldapadd
-              - -x
-              - -H
-              - ldap://127.0.0.1:1389
-              - -D
-              - cn=admin,dc=example,dc=test
-              - -w
-              - disposable-fixture-password
-              - -f
-              - /fixtures/base.ldif
     - name: reconcile-through-shared-config
       try:
         - apply:
@@ -943,7 +915,7 @@ spec:
               apiVersion: pkg.crossplane.io/v1beta1
               kind: DeploymentRuntimeConfig
               metadata:
-                name: ldap
+                name: provider-ldap
               spec:
                 deploymentTemplate:
                   spec:
@@ -1022,7 +994,7 @@ spec:
               apiVersion: pkg.crossplane.io/v1beta1
               kind: DeploymentRuntimeConfig
               metadata:
-                name: ldap
+                name: provider-ldap
               spec:
                 deploymentTemplate:
                   spec:
@@ -1081,7 +1053,7 @@ spec:
               apiVersion: pkg.crossplane.io/v1beta1
               kind: DeploymentRuntimeConfig
               metadata:
-                name: ldap
+                name: provider-ldap
               spec:
                 deploymentTemplate:
                   spec:
@@ -1131,7 +1103,7 @@ spec:
               apiVersion: pkg.crossplane.io/v1beta1
               kind: DeploymentRuntimeConfig
               metadata:
-                name: ldap
+                name: provider-ldap
               spec:
                 deploymentTemplate:
                   spec:
@@ -1900,7 +1872,7 @@ spec:
               apiVersion: pkg.crossplane.io/v1beta1
               kind: DeploymentRuntimeConfig
               metadata:
-                name: ldap
+                name: provider-ldap
               spec:
                 deploymentTemplate:
                   spec:
@@ -1996,7 +1968,7 @@ spec:
               apiVersion: pkg.crossplane.io/v1beta1
               kind: DeploymentRuntimeConfig
               metadata:
-                name: ldap
+                name: provider-ldap
               spec:
                 deploymentTemplate:
                   spec:

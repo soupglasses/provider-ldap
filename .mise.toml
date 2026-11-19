@@ -8,3 +8,13 @@
 "aqua:crossplane/cli" = "2.5.0"
 "aqua:kubernetes-sigs/kind" = "0.33.0"
 "aqua:kyverno/chainsaw" = "0.2.15"
+"github:crossplane/uptest" = "2.2.0"
+
+[tasks.build]
+description = "Build the provider package"
+run = 'bash build.sh "/tmp/$(yq .metadata.name package/crossplane.yaml).xpkg"'
+
+[tasks.e2e]
+description = "Build the package and test it in a disposable kind cluster"
+depends = ["build"]
+run = "bash e2e.sh"

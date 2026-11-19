@@ -24,11 +24,10 @@ jobs:
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           version: 2026.11.9
-      - name: Build native package and LDAP fixtures
+      - name: Build native package
         run: |
           bash build.sh /tmp/provider-ldap-amd64.xpkg linux/amd64
           bash build.sh /tmp/provider-ldap-arm64.xpkg linux/arm64
-          docker build --target tests --tag provider-ldap-tests:development .
       - name: Verify generated schemas are reproducible
         run: |
           docker build --target generated --output type=local,dest=/tmp/ldap-generated .
@@ -38,8 +37,8 @@ jobs:
       - name: Verify LDAP lifecycle with Chainsaw
         env:
           PROVIDER_PACKAGE: /tmp/provider-ldap-amd64.xpkg
-          CHAINSAW_REPORT_PATH: /tmp/chainsaw-reports
-        run: bash kind-test.sh
+          TEST_ARTIFACTS_DIR: /tmp/chainsaw-reports
+        run: bash e2e.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

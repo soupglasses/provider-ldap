@@ -8,12 +8,12 @@ spec:
   package: ghcr.io/soupglasses/provider-ldap:v0.5.1
   revisionHistoryLimit: 2
   runtimeConfigRef:
-    name: ldap
+    name: provider-ldap
 ---
 apiVersion: pkg.crossplane.io/v1beta1
 kind: DeploymentRuntimeConfig
 metadata:
-  name: ldap
+  name: provider-ldap
 spec:
   serviceAccountTemplate:
     metadata:

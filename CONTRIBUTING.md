@@ -9,12 +9,14 @@ Use Docker and the pinned tools in `.mise.toml`.
 
 ```sh
 docker build --target unit-tests .
-mise exec -- bash build.sh /tmp/provider-ldap.xpkg linux/amd64
-docker build --target tests --tag provider-ldap-tests:development .
-mise exec -- env PROVIDER_PACKAGE=/tmp/provider-ldap.xpkg bash kind-test.sh
+mise run e2e
 ```
 
+`mise run e2e` builds the package and tests it in a disposable kind cluster.
 Unit tests exercise the native Crossplane connector and LDAP ownership logic.
+[uptest](https://github.com/crossplane/uptest) applies the examples listed in `e2e.sh`
+against the disposable directory that `tests/setup.sh` starts, and re-imports them after
+a provider restart.
 [Chainsaw](https://kyverno.github.io/chainsaw/) drives real Kubernetes lifecycle
 operations in disposable kind; ordinary Go tests verify the resulting LDAP state.
 The fixture uses OpenLDAP, restricted Pod Security and synthetic credentials.
