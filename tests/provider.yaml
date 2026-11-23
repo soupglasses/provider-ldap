@@ -5,7 +5,7 @@ kind: Provider
 metadata:
   name: ldap
 spec:
-  package: ghcr.io/soupglasses/provider-ldap:v0.5.1
+  package: ghcr.io/soupglasses/provider-ldap:v0.5.1@sha256:a019dac8af91203b05550d3211887bb27937321cc885c8d8af44a46b299ca2f9
   revisionHistoryLimit: 2
   runtimeConfigRef:
     name: provider-ldap
